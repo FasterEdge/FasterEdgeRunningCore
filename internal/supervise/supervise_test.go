@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/FasterEdge/FasterEdgeRunningCore/internal/platform"
 )
@@ -197,6 +198,158 @@ func TestRegisterDontCrackArgsUseEqualsForm(t *testing.T) {
 	// DontCrack 的 flag 包会把以 - 开头的 -args 值吞并，必须用等号形式。
 	if !strings.Contains(joined, "-args=-mode normal") {
 		t.Fatalf("必须使用 -args= 等号形式\n%s", joined)
+	}
+}
+
+func TestRegisterDontCrackUsesSpawn(t *testing.T) {
+	// DontCrack 永不退出，必须走 Spawn（不等它），否则装载会被卡到超时。
+	dir := t.TempDir()
+	m, run := newManager(t, platform.InitNone, dir)
+	m.DontCrackBin = "/bin/DontCrack"
+	var spawned int
+	var gotArgs []string
+	m.Spawn = func(name string, args []string, logPath string) (int, error) {
+		spawned++
+		gotArgs = append([]string{name}, args...)
+		return 4242, nil
+	}
+	res, err := m.Register(context.Background(), opts())
+	if err != nil {
+		t.Fatalf("注册失败: %v", err)
+	}
+	if res.ManagerPID != 4242 {
+		t.Fatalf("应记录管理器进程号，实际 %d", res.ManagerPID)
+	}
+	if spawned != 1 {
+		t.Fatalf("应通过 Spawn 启动一次，实际 %d 次", spawned)
+	}
+	if len(run.calls) != 0 {
+		t.Fatalf("有 Spawn 时不该走阻塞式 Run，实际调用了 %v", run.calls)
+	}
+	if gotArgs[0] != "/bin/DontCrack" {
+		t.Fatalf("第一个参数应是可执行文件，实际 %v", gotArgs)
+	}
+}
+
+func TestRegisterDontCrackAllocatesDistinctPorts(t *testing.T) {
+	// 一个 DontCrack 实例只托管一个进程、只占一个控制端口。两个服务若用同一
+	// 端口，第二个实例启动即失败，节点就变成“一个保活、一个裸奔”。
+	dir := t.TempDir()
+	m, _ := newManager(t, platform.InitNone, dir)
+	m.DontCrackBin = "/bin/DontCrack"
+	var ports []string
+	m.Spawn = func(name string, args []string, logPath string) (int, error) {
+		for i, a := range args {
+			if a == "-port" && i+1 < len(args) {
+				ports = append(ports, args[i+1])
+			}
+		}
+		return 1000 + len(ports), nil
+	}
+	for offset := 0; offset < 3; offset++ {
+		o := opts()
+		o.PortOffset = offset
+		if _, err := m.Register(context.Background(), o); err != nil {
+			t.Fatalf("注册失败: %v", err)
+		}
+	}
+	want := []string{"11883", "11884", "11885"}
+	if strings.Join(ports, ",") != strings.Join(want, ",") {
+		t.Fatalf("控制端口应递增，期望 %v，实际 %v", want, ports)
+	}
+}
+
+func TestRegisterDontCrackFailsWhenControlPortNotReady(t *testing.T) {
+	// DontCrack 绑不上端口时只打日志、进程并不退出；若不探端口就会误报成功。
+	dir := t.TempDir()
+	m, _ := newManager(t, platform.InitNone, dir)
+	m.DontCrackBin = "/bin/DontCrack"
+	m.Spawn = func(string, []string, string) (int, error) { return 4321, nil }
+	m.Get = func(string) error { return errors.New("connection refused") }
+	var killed int
+	m.Kill = func(pid int) error { killed = pid; return nil }
+	if _, err := m.Register(context.Background(), opts()); err == nil {
+		t.Fatal("控制端口未就绪时必须报错")
+	}
+	if killed != 4321 {
+		t.Fatalf("失败时应结束已派生的管理器进程，实际 %d", killed)
+	}
+}
+
+func TestRegisterDontCrackFailsWhenManagedProcessIsNotUp(t *testing.T) {
+	// 管理器活着、被托管进程反复秒退（例如端口被占）时，不能报“安装成功”：
+	// 必须硬失败，并回收刚派生的管理器，让事务式安装连带回滚。
+	dir := t.TempDir()
+	m, _ := newManager(t, platform.InitNone, dir)
+	m.DontCrackBin = "/bin/DontCrack"
+	m.Spawn = func(string, []string, string) (int, error) { return 4321, nil }
+	m.StartGrace = 100 * time.Millisecond
+	m.Get = func(url string) error {
+		if strings.HasSuffix(url, "/healthz") {
+			return errors.New("503")
+		}
+		return nil
+	}
+	var killed int
+	m.Kill = func(pid int) error { killed = pid; return nil }
+	o := opts()
+	o.Ports = []int{8878}
+	_, err := m.Register(context.Background(), o)
+	if err == nil {
+		t.Fatal("被托管进程没起来时必须硬失败")
+	}
+	if !strings.Contains(err.Error(), "8878") {
+		t.Fatalf("报错应点出组件端口，实际 %v", err)
+	}
+	if killed != 4321 {
+		t.Fatalf("失败时应回收已派生的管理器，实际 %d", killed)
+	}
+}
+
+func TestUnregisterDontCrackStopsManager(t *testing.T) {
+	dir := t.TempDir()
+	m, _ := newManager(t, platform.InitNone, dir)
+	var posted []string
+	m.Get = func(string) error { return nil } // /healthz 说子进程在跑
+	m.Post = func(url string) error { posted = append(posted, url); return nil }
+	var killed int
+	m.Kill = func(pid int) error { killed = pid; return nil }
+	res := Result{Supervisor: "dontcrack", Unit: "ferc-simple-web-shell", ControlPort: 11884, ManagerPID: 777}
+	if err := m.Unregister(context.Background(), res); err != nil {
+		t.Fatalf("卸载失败: %v", err)
+	}
+	if len(posted) != 1 || !strings.Contains(posted[0], "11884/shutdown") {
+		t.Fatalf("应让管理器按自己的端口停掉子进程，实际 %v", posted)
+	}
+	if killed != 777 {
+		t.Fatalf("应结束管理器进程本身，实际 %d", killed)
+	}
+}
+
+func TestUnregisterDontCrackToleratesAlreadyDeadChild(t *testing.T) {
+	// 子进程早就崩了（例如绑不上端口）时 /shutdown 会返回 500；那是“已经是停的
+	// 状态”，不该被当成卸载失败，管理器本身仍必须被收掉。
+	dir := t.TempDir()
+	m, _ := newManager(t, platform.InitNone, dir)
+	m.Get = func(url string) error {
+		if strings.HasSuffix(url, "/healthz") {
+			return errors.New("503")
+		}
+		return nil
+	}
+	var posted int
+	m.Post = func(string) error { posted++; return nil }
+	var killed int
+	m.Kill = func(pid int) error { killed = pid; return nil }
+	res := Result{Supervisor: "dontcrack", Unit: "ferc-simple-time-service", ControlPort: 11884, ManagerPID: 888}
+	if err := m.Unregister(context.Background(), res); err != nil {
+		t.Fatalf("子进程已停时卸载不该失败: %v", err)
+	}
+	if posted != 0 {
+		t.Fatalf("子进程没在跑时不该发 /shutdown，实际 %d 次", posted)
+	}
+	if killed != 888 {
+		t.Fatalf("管理器本身仍应被结束，实际 %d", killed)
 	}
 }
 

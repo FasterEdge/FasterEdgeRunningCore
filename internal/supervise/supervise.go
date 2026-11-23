@@ -25,12 +25,23 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/FasterEdge/FasterEdgeRunningCore/internal/platform"
 )
 
 // Exec 执行一条外部命令。
 type Exec func(ctx context.Context, name string, args ...string) (string, error)
+
+// Spawn 启动一条不等待其退出的外部命令，返回其进程号。
+//
+// 进程管理器（DontCrack）本身是长期运行的服务，用 Exec 会一直阻塞到它退出，
+// 而它永远不退出——那会把装载卡到超时。因此这类“要留在后台跑”的命令必须走
+// Spawn：启动后立即返回，输出重定向到日志文件。
+//
+// 返回进程号是为了让卸载时能真正收拾干净：DontCrack 的 /shutdown 只停被托管的
+// 子进程，管理器自己还在，必须靠进程号才能把它一起结束。
+type Spawn func(name string, args []string, logPath string) (int, error)
 
 // Options 是注册一个服务所需的全部输入。
 type Options struct {
@@ -46,6 +57,12 @@ type Options struct {
 	LogDir string
 	// Description 是人类可读描述。
 	Description string
+	// PortOffset 是自托管进程管理器的控制端口偏移。DontCrack 一个实例只托管
+	// 一个进程、只占一个 HTTP 控制端口，所以同一次装载里的第 n 个服务要拿
+	// 基准端口 + n，否则第二个实例会因为端口被占而启动失败。
+	PortOffset int
+	// Ports 是组件自己声明的监听端口，仅用于把失败原因说清楚。
+	Ports []int
 }
 
 // Result 描述注册结果。
@@ -55,6 +72,13 @@ type Result struct {
 	Supervisor string
 	// Unit 是注册出去的单元名。
 	Unit string
+	// ControlPort 是自托管进程管理器的 HTTP 控制端口（仅 supervisor=dontcrack
+	// 时非零）。DontCrack 一次只托管一个进程，因此每个被托管服务各占一个端口，
+	// 否则第二个服务会去抢第一个的端口、启动即失败。
+	ControlPort int
+	// ManagerPID 是自托管进程管理器的进程号（仅 supervisor=dontcrack 时非零），
+	// 卸载时用它把管理器本身一起结束，不留孤儿进程。
+	ManagerPID int
 	// Written 是本次写出的文件（便于卸载时清理）。
 	Written []string
 	// Warnings 是“做了但需要人知道”的事，例如 schtasks 只能自启不能拉起。
@@ -66,11 +90,21 @@ type Manager struct {
 	GOOS     string
 	Init     platform.InitSystem
 	Run      Exec
+	Spawn    Spawn
 	Write    func(path string, data []byte, perm os.FileMode) error
 	MkdirAll func(path string, perm os.FileMode) error
+	// Get 发一个 HTTP GET，用于探测自托管管理器的控制端口是否还在。
+	Get func(url string) error
+	// Post 发一个 HTTP POST，用于让自托管管理器停掉它托管的子进程。
+	Post func(url string) error
+	// Kill 结束指定进程。卸载自托管服务时要连管理器本身一起收掉。
+	Kill func(pid int) error
+	// StartGrace 是等待被托管进程起来的宽限；为 0 时用默认值。测试可缩短。
+	StartGrace time.Duration
 	// DontCrackBin 是已装载的 DontCrack 可执行文件路径；仅在需要自托管时使用。
 	DontCrackBin string
-	// DontCrackPort 是 DontCrack 的 HTTP 控制端口。
+	// DontCrackPort 是 DontCrack 的 HTTP 控制端口基准值；实际端口为
+	// DontCrackPort + Options.PortOffset，避免多服务装载时互相抢端口。
 	DontCrackPort int
 	// Root 是运行核的数据根目录。
 	Root string
@@ -82,8 +116,12 @@ func New(info platform.Info, root string) *Manager {
 		GOOS:     info.GOOS,
 		Init:     info.Init,
 		Run:      runExec,
+		Spawn:    spawnDetached,
 		Write:    writeFile,
 		MkdirAll: os.MkdirAll,
+		Get:      httpGet,
+		Post:     httpPost,
+		Kill:     killProcess,
 		Root:     root,
 	}
 }
@@ -164,7 +202,31 @@ func (m *Manager) Unregister(ctx context.Context, res Result) error {
 			errs = append(errs, err)
 		}
 	case "dontcrack":
-		// DontCrack 由外部 HTTP 接口管理；这里只清理我们写的启动配置。
+		// DontCrack 的 /shutdown 只停被托管的子进程，管理器自己还在。不理它就会
+		// 留下一个占着控制端口的孤儿进程，下次装载想用同一端口就直接失败。
+		// 所以这里两步都做：先让管理器停掉子进程，再把管理器本身结束掉。
+		//
+		// 子进程可能早就崩了（例如绑不上端口），此时 DontCrack 的 /shutdown 会
+		// 返回 500「进程未运行」。那是“已经是停的状态”，不是卸载失败——所以先问
+		// /healthz 判断有没有真的在跑，别把正常情况报成错误。
+		childRunning := res.ControlPort > 0 && m.Get != nil &&
+			m.Get(fmt.Sprintf("http://127.0.0.1:%d/healthz", res.ControlPort)) == nil
+		if childRunning && m.Post != nil {
+			url := fmt.Sprintf("http://127.0.0.1:%d/shutdown", res.ControlPort)
+			if err := m.Post(url); err != nil {
+				errs = append(errs, fmt.Errorf("停止 DontCrack 托管的进程失败: %w", err))
+			}
+		}
+		if m.Kill != nil && res.ManagerPID > 0 {
+			if err := m.Kill(res.ManagerPID); err != nil {
+				errs = append(errs, fmt.Errorf("结束 DontCrack 进程 %d 失败: %w", res.ManagerPID, err))
+			}
+		} else if res.ControlPort > 0 && m.Get != nil &&
+			m.Get(fmt.Sprintf("http://127.0.0.1:%d/", res.ControlPort)) == nil {
+			// 老状态文件里没有进程号，只能靠控制端口判断是否还活着，然后说清楚
+			// 需要人工处理——不静默留一个占着端口的孤儿。
+			errs = append(errs, fmt.Errorf("DontCrack 仍在端口 %d 上运行且未记录进程号，请手工结束", res.ControlPort))
+		}
 	}
 	for _, p := range res.Written {
 		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -379,7 +441,7 @@ exit 0
 	return b.String()
 }
 
-// registerDontCrack 让 DontCrack 托管目标组件，并产出可直接执行的命令行。
+// registerDontCrack 让 DontCrack 托管目标组件，并把它作为后台服务启动。
 func (m *Manager) registerDontCrack(ctx context.Context, opt Options) (Result, error) {
 	if m.DontCrackBin == "" {
 		return Result{}, errors.New("supervise: 当前系统没有可用的进程保活能力，且未装载进程管理器")
@@ -388,6 +450,9 @@ func (m *Manager) registerDontCrack(ctx context.Context, opt Options) (Result, e
 	if port == 0 {
 		port = 11883
 	}
+	// 一个 DontCrack 实例只管一个进程、只占一个控制端口；同批装载的多个服务
+	// 必须各拿一个端口，否则第二个实例会因端口被占直接退出。
+	port += opt.PortOffset
 	logDir := opt.LogDir
 	if logDir == "" {
 		logDir = filepath.Join(m.Root, "logs")
@@ -408,10 +473,106 @@ func (m *Manager) registerDontCrack(ctx context.Context, opt Options) (Result, e
 		// DontCrack 的 -args 遇到以 - 开头的值会被 flag 包吞并，必须用等号形式。
 		args = append(args, "-args="+strings.Join(opt.Args, " "))
 	}
-	if _, err := m.Run(ctx, m.DontCrackBin, args...); err != nil {
+	pid, err := m.start(ctx, m.DontCrackBin, args, filepath.Join(m.Root, "logs",
+		"dontcrack-"+opt.Unit+".log"))
+	if err != nil {
 		return Result{}, fmt.Errorf("supervise: 启动进程管理器托管 %s 失败: %w", opt.Unit, err)
 	}
-	return Result{Supervisor: "dontcrack", Unit: opt.Unit}, nil
+	// DontCrack 的 HTTP 服务绑不上端口时只打日志、进程并不退出，光看“进程还活着”
+	// 会得出“装载成功”的错误结论。因此这里必须真的探一次控制端口。
+	if m.Get != nil {
+		base := fmt.Sprintf("http://127.0.0.1:%d/", port)
+		var lastErr error
+		deadline := time.Now().Add(2 * time.Second)
+		for {
+			lastErr = m.Get(base)
+			if lastErr == nil {
+				break
+			}
+			if time.Now().After(deadline) {
+				if m.Kill != nil && pid > 0 {
+					m.Kill(pid)
+				}
+				return Result{}, fmt.Errorf("supervise: 进程管理器控制端口 %d 未就绪，托管 %s 失败: %w",
+					port, opt.Unit, lastErr)
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+
+	res := Result{Supervisor: "dontcrack", Unit: opt.Unit, ControlPort: port, ManagerPID: pid}
+	// 管理器活着不等于被托管的进程活着：组件自己绑不上端口时会秒退、被反复重启，
+	// 而管理器仍健康。这种“装好了但跑不起来”的节点比没装更麻烦，所以不降级成
+	// 告警，而是硬失败并回收刚派生的管理器——事务式安装会连带回滚前面几步。
+	if m.Get != nil && !m.waitHealthy(port, m.startGrace()) {
+		if m.Kill != nil && pid > 0 {
+			m.Kill(pid)
+		}
+		return Result{}, fmt.Errorf(
+			"supervise: %s 启动后未能保持运行（控制端口 %d 的 /healthz 一直不是 200），"+
+				"常见原因是端口 %s 已被占用或组件参数不适用",
+			opt.Unit, port, portList(opt))
+	}
+	return res, nil
+}
+
+// portList 把组件声明的端口拼成可读文本，供报错直接用。
+func portList(opt Options) string {
+	if len(opt.Ports) == 0 {
+		return "（未声明）"
+	}
+	parts := make([]string, 0, len(opt.Ports))
+	for _, p := range opt.Ports {
+		parts = append(parts, fmt.Sprint(p))
+	}
+	return strings.Join(parts, "/")
+}
+
+// managedStartGrace 是等待被托管进程起来的宽限：服务要 bind 端口、加载配置，
+// 给几秒比立刻判定“没起来”更接近事实。
+const managedStartGrace = 5 * time.Second
+
+// healthyStreak 是判定“真的起来了”所需的连续健康次数。只看一次探测会被
+// “进程刚拉起、还没崩”的瞬间骗过去——绑不上端口的组件正是这样先活几十毫秒再退出。
+const healthyStreak = 4
+
+// startGrace 返回等待被托管进程起来的宽限，允许测试缩短。
+func (m *Manager) startGrace() time.Duration {
+	if m.StartGrace > 0 {
+		return m.StartGrace
+	}
+	return managedStartGrace
+}
+
+// waitHealthy 轮询管理器的 /healthz，要求连续多次健康才认为托管成功。
+func (m *Manager) waitHealthy(port int, grace time.Duration) bool {
+	url := fmt.Sprintf("http://127.0.0.1:%d/healthz", port)
+	deadline := time.Now().Add(grace)
+	streak := 0
+	for {
+		if m.Get(url) == nil {
+			streak++
+		} else {
+			streak = 0
+		}
+		if streak >= healthyStreak {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+}
+
+// start 启动一个长期运行的服务：有 Spawn 就走后台，否则退回 Run。
+// 之所以允许退回 Run，是为了让单元测试能在不真的起进程的前提下断言参数。
+func (m *Manager) start(ctx context.Context, bin string, args []string, logPath string) (int, error) {
+	if m.Spawn != nil {
+		return m.Spawn(bin, args, logPath)
+	}
+	_, err := m.Run(ctx, bin, args...)
+	return 0, err
 }
 
 // renderSchtasksCommand 生成 Windows 计划任务注册命令。

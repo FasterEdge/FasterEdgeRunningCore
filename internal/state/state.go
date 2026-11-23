@@ -42,7 +42,15 @@ type Record struct {
 	// schtasks 任务名等）。为空表示没有注册。
 	Unit string `json:"unit,omitempty"`
 	// Ports 记录该组件声明的端口，供后续冲突检查复用。
-	Ports       []int     `json:"ports,omitempty"`
+	Ports []int `json:"ports,omitempty"`
+	// SecretFile 是运行核自动生成的凭据文件路径（0600）。为空表示无凭据。
+	SecretFile string `json:"secret_file,omitempty"`
+	// ControlPort 是自托管进程管理器（DontCrack）的控制端口，仅
+	// supervisor=dontcrack 时非零。卸载时靠它让管理器停掉被托管的子进程。
+	ControlPort int `json:"control_port,omitempty"`
+	// ManagerPID 是自托管进程管理器的进程号（仅 supervisor=dontcrack 时非零）。
+	// 运行核不常驻，这是唯一能记住“谁在保活”的地方，卸载时用它清掉孤儿进程。
+	ManagerPID  int       `json:"manager_pid,omitempty"`
 	InstalledAt time.Time `json:"installed_at"`
 }
 

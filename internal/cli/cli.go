@@ -535,18 +535,14 @@ func printNextSteps(w io.Writer, info platform.Info, recs []state.Record, root s
 		return
 	}
 	fmt.Fprintln(w, "\n后续动作：")
-	var needKey []string
 	for _, r := range services {
 		for _, p := range r.Ports {
 			fmt.Fprintf(w, "  - %s 监听端口 %d\n", r.Name, p)
 		}
-		if r.Name == "simple-web-shell" {
-			needKey = append(needKey, r.Name)
+		if r.SecretFile != "" {
+			fmt.Fprintf(w, "  - %s 的访问凭据由 ferc 随机生成，见 %s（0600，仅本机可读）\n",
+				r.Name, r.SecretFile)
 		}
-	}
-	if len(needKey) > 0 {
-		fmt.Fprintf(w, "  - %s 首次启动必须设置访问密码（-key），否则进程会直接退出；\n", strings.Join(needKey, ", "))
-		fmt.Fprintf(w, "    可用 `ferc install %s --no-start` 先落盘，再自行改参数后启动\n", strings.Join(needKey, ", "))
 	}
 	fmt.Fprintf(w, "  - 已装载清单: %s\n", state.Path(root))
 }
@@ -597,6 +593,12 @@ func cmdStatus(ctx context.Context, args []string, env Env) int {
 		fmt.Fprintf(env.stdout(), "%s%s%s%s%s\n",
 			padRight(r.Name, 22), padRight(r.Kind, 12),
 			padRight(r.Version, 16), padRight(sup, 12), r.Path)
+		if r.SecretFile != "" {
+			fmt.Fprintf(env.stdout(), "  %s凭据: %s\n", strings.Repeat(" ", 20), r.SecretFile)
+		}
+		if r.ControlPort > 0 {
+			fmt.Fprintf(env.stdout(), "  %s控制端口: %d\n", strings.Repeat(" ", 20), r.ControlPort)
+		}
 	}
 	return 0
 }
@@ -727,7 +729,12 @@ func cmdRemove(ctx context.Context, args []string, env Env) int {
 			continue
 		}
 		if mgr != nil && rec.Unit != "" && rec.Supervisor != "self" {
-			if err := mgr.Unregister(ctx, supervise.Result{Supervisor: rec.Supervisor, Unit: rec.Unit}); err != nil {
+			if err := mgr.Unregister(ctx, supervise.Result{
+				Supervisor:  rec.Supervisor,
+				Unit:        rec.Unit,
+				ControlPort: rec.ControlPort,
+				ManagerPID:  rec.ManagerPID,
+			}); err != nil {
 				fmt.Fprintf(env.stderr(), "撤销 %s 的服务注册失败: %v\n", name, err)
 				failed = append(failed, name)
 				continue
@@ -738,6 +745,13 @@ func cmdRemove(ctx context.Context, args []string, env Env) int {
 				fmt.Fprintf(env.stderr(), "删除 %s 失败: %v\n", name, err)
 				failed = append(failed, name)
 				continue
+			}
+		}
+		// 自动生成的凭据是运行核创建的，卸载时就该一并清掉；否则会在
+		// secrets 目录里留下一堆没人认识、也没人敢删的密码文件。
+		if rec.SecretFile != "" {
+			if err := os.Remove(rec.SecretFile); err != nil && !errors.Is(err, os.ErrNotExist) {
+				fmt.Fprintf(env.stderr(), "删除 %s 的凭据文件失败: %v\n", name, err)
 			}
 		}
 		// 被卸载组件的依赖者若还在，需要提示：它们可能已经无法工作。

@@ -411,6 +411,178 @@ func TestApplySkipsRegistrationForSupervisorKind(t *testing.T) {
 	}
 }
 
+func TestApplyGeneratesSecretForRequiredArg(t *testing.T) {
+	archive := tarGzOf(t, "simple-web-shell", "B")
+	srv := releaseServer(t, "simple-web-shell-linux-amd64.tar.gz", archive, false)
+	cat, _ := catalog.Builtin()
+	plan := planFor(t, cat, "simple-web-shell")
+	if len(plan.Steps) != 1 || len(plan.Steps[0].Secrets) == 0 {
+		t.Fatalf("计划应标记需要生成凭据: %+v", plan.Steps)
+	}
+
+	root := t.TempDir()
+	client := fetch.New("")
+	client.BaseURL = srv.URL
+	inst, err := New(Options{Root: root, Fetcher: client})
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := &captureLogger{}
+	inst.log = log
+	recs, err := inst.Apply(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("安装失败: %v\n%s", err, log.joined())
+	}
+	rec := recs[0]
+	if rec.SecretFile == "" {
+		t.Fatal("应记录凭据文件路径")
+	}
+	b, err := os.ReadFile(rec.SecretFile)
+	if err != nil {
+		t.Fatalf("凭据文件应存在: %v", err)
+	}
+	if !strings.Contains(string(b), "-key=") {
+		t.Fatalf("凭据文件应含 -key=，实际 %s", b)
+	}
+	// 参数里必须真的带上凭据，否则服务启动还是会被拒。
+	found := false
+	for _, a := range rec.Args {
+		if strings.HasPrefix(a, "-key=") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("启动参数应含 -key=，实际 %v", rec.Args)
+	}
+	if runtime.GOOS != "windows" {
+		fi, _ := os.Stat(rec.SecretFile)
+		if fi.Mode().Perm() != 0o600 {
+			t.Fatalf("凭据文件权限应为 0600，实际 %v", fi.Mode().Perm())
+		}
+	}
+	// 凭据不该出现在日志里。
+	if strings.Contains(log.joined(), "-key=") {
+		t.Fatalf("日志不该泄露凭据\n%s", log.joined())
+	}
+}
+
+func TestApplyGeneratesDistinctSecrets(t *testing.T) {
+	archive := tarGzOf(t, "simple-web-shell", "B")
+	srv := releaseServer(t, "simple-web-shell-linux-amd64.tar.gz", archive, false)
+	cat, _ := catalog.Builtin()
+
+	read := func() string {
+		plan := planFor(t, cat, "simple-web-shell")
+		root := t.TempDir()
+		client := fetch.New("")
+		client.BaseURL = srv.URL
+		inst, err := New(Options{Root: root, Fetcher: client})
+		if err != nil {
+			t.Fatal(err)
+		}
+		inst.log = &captureLogger{}
+		recs, err := inst.Apply(context.Background(), plan)
+		if err != nil {
+			t.Fatalf("安装失败: %v", err)
+		}
+		return recs[0].Args[len(recs[0].Args)-1]
+	}
+	a, b := read(), read()
+	if a == b {
+		t.Fatalf("两次生成的凭据不该相同: %s", a)
+	}
+}
+
+func TestApplyRecordsDistinctControlPortsForMultipleServices(t *testing.T) {
+	// 没有原生保活能力的系统上，两个服务各要一个 DontCrack 实例。若端口相同，
+	// 第二个实例绑不上端口，节点就变成“一个被保活、一个裸奔”而没人知道。
+	mux := http.NewServeMux()
+	type fake struct {
+		repo, asset string
+		archive     []byte
+	}
+	fakes := []fake{
+		{"FasterEdge/DontCrack4ManyLinux", "dontcrack-manylinux-linux-amd64.tar.gz", tarGzOf(t, "dontcrack-manylinux", "B")},
+		{"FasterEdge/SimpleWebShell", "simple-web-shell-linux-amd64.tar.gz", tarGzOf(t, "simple-web-shell", "B")},
+		{"FasterEdge/SimpleTimeService", "simple-time-service-linux-amd64.tar.gz", tarGzOf(t, "simple-time-service", "B")},
+	}
+	var srv *httptest.Server
+	for _, f := range fakes {
+		f := f
+		mux.HandleFunc("/repos/"+f.repo+"/releases/latest", func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewEncoder(w).Encode(fetch.Release{
+				Tag:    "v1.0.20261124",
+				Assets: []fetch.Asset{{Name: f.asset, URL: srv.URL + "/dl/" + f.asset, Size: int64(len(f.archive))}},
+			})
+		})
+		mux.HandleFunc("/dl/"+f.asset, func(w http.ResponseWriter, r *http.Request) { w.Write(f.archive) })
+	}
+	srv = httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	cat, _ := catalog.Builtin()
+	plan, err := resolve.Resolve(cat, resolve.Request{
+		Want: []string{"simple-web-shell", "simple-time-service"},
+		Info: platform.Info{GOOS: "linux", GOARCH: "amd64", Arch: "amd64", Init: platform.InitNone},
+	})
+	if err != nil {
+		t.Fatalf("解析失败: %v", err)
+	}
+
+	root := t.TempDir()
+	var ports []string
+	mgr := &supervise.Manager{
+		GOOS:         "linux",
+		Init:         platform.InitNone,
+		DontCrackBin: filepath.Join(root, "bin", "dontcrack-manylinux"),
+		Run:          func(context.Context, string, ...string) (string, error) { return "", nil },
+		Write:        func(string, []byte, os.FileMode) error { return nil },
+		MkdirAll:     func(p string, perm os.FileMode) error { return os.MkdirAll(p, perm) },
+		Get:          func(string) error { return nil },
+		Spawn: func(_ string, args []string, _ string) (int, error) {
+			for i, a := range args {
+				if a == "-port" && i+1 < len(args) {
+					ports = append(ports, args[i+1])
+				}
+			}
+			return 9000 + len(ports), nil
+		},
+		Root: root,
+	}
+	client := fetch.New("")
+	client.BaseURL = srv.URL
+	inst, err := New(Options{
+		Root:       root,
+		Info:       platform.Info{GOOS: "linux", GOARCH: "amd64", Init: platform.InitNone},
+		Fetcher:    client,
+		Supervisor: mgr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := &captureLogger{}
+	inst.log = log
+	if _, err := inst.Apply(context.Background(), plan); err != nil {
+		t.Fatalf("安装失败: %v\n%s", err, log.joined())
+	}
+	if len(ports) != 2 || ports[0] == ports[1] {
+		t.Fatalf("两个服务应各占一个控制端口，实际 %v", ports)
+	}
+	st, err := state.Load(state.Path(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []int
+	for _, r := range st.Components {
+		if r.ControlPort != 0 {
+			got = append(got, r.ControlPort)
+		}
+	}
+	if len(got) != 2 || got[0] == got[1] {
+		t.Fatalf("状态文件应记录两个不同的控制端口，实际 %v", got)
+	}
+}
+
 func mustComp(t *testing.T, cat *catalog.Catalog, name string) *catalog.Component {
 	t.Helper()
 	c, ok := cat.Get(name)

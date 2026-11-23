@@ -42,6 +42,10 @@ type Step struct {
 	Args      []string
 	// Reason 说明“为什么这一步会出现”，安装日志会原样打印。
 	Reason string
+	// Secrets 是本次为新生成凭据预留的参数字面值，键为参数名（如 -key）。
+	// resolve 只负责占位，真正取值由 install 在落盘时生成，这样计划本身
+	// 仍然可以被安全地打印与存档。
+	Secrets map[string]string
 }
 
 // Plan 是一次装载的完整计划。
@@ -52,6 +56,12 @@ type Plan struct {
 	Supervisor SupervisorDecision  `json:"supervisor"`
 	Steps      []Step              `json:"steps"`
 	Warnings   []string            `json:"warnings"`
+	// Errors 是“计划里有组件无法装载”的硬错误。它们不会中止整份计划，
+	// 但调用方必须据此拒绝执行——否则会出现“答应装三个、实际只装了两个”
+	// 的静默降级。
+	Errors []string `json:"errors,omitempty"`
+	// Err 是把 Errors 汇总后的错误值，供调用方直接判空。
+	Err error `json:"-"`
 }
 
 // Names 返回计划中各组件的装载顺序。
@@ -127,6 +137,9 @@ func Resolve(cat *catalog.Catalog, req Request) (*Plan, error) {
 		// 计划号称要装载 supervisor 却没能排进去，等于“答应保活但没保活”，
 		// 这比直接失败更危险，必须硬失败。
 		return plan, errors.New("resolve: 需要进程保活，但进程管理器无法在当前平台装载")
+	}
+	if plan.Err != nil {
+		return plan, plan.Err
 	}
 	return plan, nil
 }
@@ -281,16 +294,43 @@ func (p *Plan) checkConflicts(cat *catalog.Catalog, names []string, allow bool) 
 	return fmt.Errorf("resolve: 存在冲突（可用 --allow-conflicts 降级为告警）: %s", strings.Join(problems, "; "))
 }
 
+// fill 把名字列表展开成可执行的装载步骤。
 func (p *Plan) fill(cat *catalog.Catalog, names []string, arch, goos string, needsSupervisor bool) {
 	for _, n := range names {
 		comp, _ := cat.Get(n)
+		args := comp.Args(goos)
+		// 缺必填参数时不能悄悄装上：那是“装好了但跑不起来”的最坏形态。
+		// 若该参数属于可自动生成的凭据，就记下需要生成；否则整条计划失败。
+		var missingHard []string
+		secrets := map[string]string{}
+		optional := map[string]bool{}
+		for _, s := range comp.SecretArgs {
+			optional[s] = true
+		}
+		for _, miss := range comp.MissingRequiredArgs(args) {
+			if optional[miss] {
+				secrets[miss] = ""
+				continue
+			}
+			missingHard = append(missingHard, miss)
+		}
+		if len(missingHard) > 0 {
+			p.Warnings = append(p.Warnings, fmt.Sprintf(
+				"%s 缺少必填参数 %s，装载会失败", comp.Name, strings.Join(missingHard, ", ")))
+			p.Errors = append(p.Errors, fmt.Sprintf("%s 缺少必填参数 %s", comp.Name, strings.Join(missingHard, ", ")))
+			continue
+		}
+
 		step := Step{
 			Component: comp,
 			Repo:      comp.Repo(goos),
 			Asset:     comp.AssetName(goos, arch),
 			Binary:    comp.BinaryName(goos),
-			Args:      comp.Args(goos),
+			Args:      args,
 			Reason:    "显式请求",
+		}
+		if len(secrets) > 0 {
+			step.Secrets = secrets
 		}
 		if needsSupervisor && comp.Kind == catalog.KindSupervisor {
 			step.Reason = fmt.Sprintf("%s 不提供进程保活，装载自托管进程管理器", p.Init)
@@ -307,8 +347,12 @@ func (p *Plan) fill(cat *catalog.Catalog, names []string, arch, goos string, nee
 		}
 		p.Steps = append(p.Steps, step)
 	}
-	if len(p.Steps) == 0 {
+	if len(p.Steps) == 0 && len(p.Errors) == 0 {
 		p.Warnings = append(p.Warnings, "没有可在当前平台装载的组件")
+	}
+	if len(p.Errors) > 0 {
+		sort.Strings(p.Errors)
+		p.Err = fmt.Errorf("resolve: %s", strings.Join(p.Errors, "; "))
 	}
 	sort.SliceStable(p.Warnings, func(i, j int) bool { return p.Warnings[i] < p.Warnings[j] })
 }

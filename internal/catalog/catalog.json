@@ -37,6 +37,8 @@
       "archs": ["amd64", "arm64"],
       "ports": [8878],
       "essential": true,
+      "required_args": ["-key"],
+      "secret_args": ["-key"],
       "notes": "必须以 -key 提供访问密码；默认端口 8878。"
     },
     {

@@ -224,6 +224,52 @@ func TestResolveNoDuplicateSupervisor(t *testing.T) {
 	}
 }
 
+func TestResolveAutoSecretForRequiredArg(t *testing.T) {
+	// SimpleWebShell 没有 -key 会直接退出；resolve 不该让它变硬错误，
+	// 而是标记“这个参数需要运行核生成”。
+	plan, err := Resolve(builtin(t), Request{
+		Want: []string{"simple-web-shell"},
+		Info: platform.Info{GOOS: "linux", GOARCH: "amd64", Arch: "amd64", Init: platform.InitSystemd},
+	})
+	if err != nil {
+		t.Fatalf("解析失败: %v", err)
+	}
+	if len(plan.Steps) != 1 {
+		t.Fatalf("应有 1 步，实际 %v", plan.Names())
+	}
+	if _, ok := plan.Steps[0].Secrets["-key"]; !ok {
+		t.Fatalf("应标记需要生成 -key，实际 %v", plan.Steps[0].Secrets)
+	}
+}
+
+func TestResolveHardRequiredArgIsError(t *testing.T) {
+	raw := `{"schema_version":1,"components":[
+		{"name":"app","kind":"service","repos":{"default":"o/r"},"required_args":["-token"]}]}`
+	cat, err := catalog.Load([]byte(raw))
+	if err != nil {
+		t.Fatalf("加载失败: %v", err)
+	}
+	plan, err := Resolve(cat, Request{
+		Want: []string{"app"},
+		Info: platform.Info{GOOS: "linux", GOARCH: "amd64", Arch: "amd64", Init: platform.InitSystemd},
+	})
+	if err == nil {
+		t.Fatal("缺必填参数且无法自动生成时，必须报错而不是装上一个跑不起来的服务")
+	}
+	if plan == nil || len(plan.Errors) == 0 {
+		t.Fatalf("计划里应记录硬错误，实际 %+v", plan)
+	}
+}
+
+func TestContainsName(t *testing.T) {
+	if !containsName([]string{"a", "b"}, "b") {
+		t.Fatal("b 应在列表中")
+	}
+	if containsName([]string{"a"}, "c") {
+		t.Fatal("c 不在列表中")
+	}
+}
+
 func contains(xs []string, want string) bool {
 	for _, x := range xs {
 		if x == want {

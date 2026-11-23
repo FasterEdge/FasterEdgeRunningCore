@@ -41,6 +41,15 @@ Supervision capability differs sharply across systems, and **"starts on boot" is
 
 This is where "install a process manager if the system does not have one" lands. The decision is made from two orthogonal capabilities in `internal/platform` (`Autostart()` and `Respawn()`), not from guessing by OS name.
 
+#### Why every service gets its own control port
+
+One DontCrack instance supervises exactly one process and owns one HTTP control port (11883 by default). If two services in a single `bootstrap` both need supervision, the second instance would fight the first for the port and fail to start — and DontCrack only logs a bind failure instead of exiting, so "the process is alive" is not proof of success. Therefore:
+
+- the n-th supervised service takes `11883 + n`, increasing with install order;
+- the assigned port is recorded as `control_port` in `ferc-state.json`, so uninstall can find the matching manager instance;
+- install first probes the manager's control port, then requires `/healthz` to report a running child several times in a row; failing either is a hard error that reclaims the spawned manager and lets the transactional install roll back (otherwise you get a node that "installed fine" but crash-loops forever);
+- `ferc remove` first asks the manager to stop its child (`/shutdown`), then terminates the manager itself, leaving no orphan holding the port. A child that already crashed is not reported as an uninstall failure.
+
 #### Why installation is transactional
 
 A half-finished install is the worst outcome: partial files on disk, a state file that does not know about them, and the next person left guessing. Every FERC step — download, verify, extract, pick the executable — happens inside a staging directory. Only after all steps succeed are files atomically moved into place; any failure rolls back both moved files and registered services, leaving the state file untouched.

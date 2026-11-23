@@ -65,6 +65,13 @@ type Component struct {
 	DefaultArgs []string `json:"default_args,omitempty"`
 	// ArgsByOS 按 GOOS 追加额外启动参数。
 	ArgsByOS map[string][]string `json:"args_by_os,omitempty"`
+	// RequiredArgs 是启动必须具备的参数名（如 -key）。缺失时运行核应在
+	// 装载前直接报错，而不是装上一个一启动就退出的“常驻服务”。
+	RequiredArgs []string `json:"required_args,omitempty"`
+	// SecretArgs 是“缺失时应自动生成一个随机值”的必填参数。
+	// 它让 `ferc bootstrap` 真正做到一行指令即可用：终端服务的访问密码
+	// 由运行核生成并记录，而不是要人先想一个再手写进命令行。
+	SecretArgs []string `json:"secret_args,omitempty"`
 	// Version 固定版本；为空表示跟随该仓最新 release。
 	Version string `json:"version,omitempty"`
 	// Essential 标记“一键默认”是否包含该组件。
@@ -262,6 +269,33 @@ func (comp *Component) Args(goos string) []string {
 	out = append(out, comp.DefaultArgs...)
 	out = append(out, comp.ArgsByOS[goos]...)
 	return out
+}
+
+// MissingRequiredArgs 返回缺失的必填参数名。
+//
+// 这是“装上一个一启动就退出的服务”的防线：SimpleWebShell 没有 -key 会直接
+// 退出，如果运行核照样把它注册成常驻服务，节点表面上装好了、实际什么都没跑，
+// 而这恰恰是最难排查的失败模式。
+func (comp *Component) MissingRequiredArgs(args []string) []string {
+	if len(comp.RequiredArgs) == 0 {
+		return nil
+	}
+	present := make(map[string]bool, len(args))
+	for _, a := range args {
+		// 同时接受 "-key value" 与 "-key=value" 两种写法。
+		if k, _, ok := strings.Cut(a, "="); ok {
+			present[k] = true
+		} else {
+			present[a] = true
+		}
+	}
+	var missing []string
+	for _, req := range comp.RequiredArgs {
+		if !present[req] {
+			missing = append(missing, req)
+		}
+	}
+	return missing
 }
 
 // SupportsArch 报告该组件是否发布了目标架构的产物。
