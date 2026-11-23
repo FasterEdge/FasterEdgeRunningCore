@@ -1,0 +1,5 @@
+/ferc
+/ferc.exe
+*.out
+coverage.txt
+.DS_Store

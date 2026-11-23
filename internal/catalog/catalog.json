@@ -1,0 +1,164 @@
+{
+  "schema_version": 1,
+  "components": [
+    {
+      "name": "dontcrack",
+      "display": "DontCrack 进程管理器",
+      "summary": "自托管进程管理器：当目标系统没有原生进程保活能力（systemd/openrc/launchd 之外的 sysvinit、Windows 计划任务、以及无 init 的精简系统）时由运行核自动装载，负责托管其它常驻组件并在崩溃后拉起。",
+      "kind": "supervisor",
+      "repos": {
+        "linux": "FasterEdge/DontCrack4ManyLinux",
+        "windows": "FasterEdge/DontCrack4Windows",
+        "darwin": "FasterEdge/DontCrack4Mac"
+      },
+      "stems": {
+        "linux": "dontcrack-manylinux",
+        "windows": "dontcrack-windows",
+        "darwin": "dontcrack-mac"
+      },
+      "binaries": {
+        "linux": "dontcrack-manylinux",
+        "windows": "dontcrack-windows.exe",
+        "darwin": "dontcrack-mac"
+      },
+      "archs": ["386", "amd64", "arm64", "armv7"],
+      "ports": [11883],
+      "default_args": ["-auto-restart", "-max-retries", "-1", "-start-now", "-file-log"],
+      "notes": "只在无原生保活能力的系统上装载；有 systemd 等时不重复引入。"
+    },
+    {
+      "name": "simple-web-shell",
+      "display": "SimpleWebShell 远程终端",
+      "summary": "受密码保护的 Web 终端与文件管理：命令执行、文件上传下载、会话保持。装载后管理员即可不再登录本机而直接管理该节点。",
+      "kind": "service",
+      "repos": { "default": "FasterEdge/SimpleWebShell" },
+      "stems": { "default": "simple-web-shell" },
+      "binaries": { "default": "simple-web-shell", "windows": "simple-web-shell.exe" },
+      "archs": ["amd64", "arm64"],
+      "ports": [8878],
+      "essential": true,
+      "notes": "必须以 -key 提供访问密码；默认端口 8878。"
+    },
+    {
+      "name": "mqtt-broker-core",
+      "display": "MQTT Broker",
+      "summary": "兼容的 MQTT broker，为边缘节点提供本地消息总线。",
+      "kind": "service",
+      "repos": { "default": "FasterEdge/MqttBrokerCore" },
+      "stems": { "default": "mqtt-broker-core" },
+      "binaries": { "default": "mqtt-broker-core", "windows": "mqtt-broker-core.exe" },
+      "archs": ["amd64", "arm64"],
+      "ports": [1883],
+      "notes": "默认无配置文件时以内置默认值启动；生产建议显式 -conf。"
+    },
+    {
+      "name": "simple-time-service",
+      "display": "对时服务",
+      "summary": "本地 UTC 时间与 NTP 对时的 JSON 接口，供其它组件校准时钟。",
+      "kind": "service",
+      "repos": { "default": "FasterEdge/SimpleTimeService" },
+      "stems": { "default": "simple-time-service" },
+      "binaries": { "default": "simple-time-service", "windows": "simple-time-service.exe" },
+      "archs": ["amd64", "arm64"],
+      "ports": [8080]
+    },
+    {
+      "name": "netmap",
+      "display": "NetMap 网络拓扑",
+      "summary": "带 Web 前端的网络拓扑管理器，轮询 FasterEdge 节点并渲染拓扑图。",
+      "kind": "service",
+      "repos": { "default": "FasterEdge/NetMap" },
+      "stems": { "default": "netmap" },
+      "binaries": { "default": "netmap", "windows": "netmap.exe" },
+      "archs": ["amd64", "arm64"],
+      "ports": [8080],
+      "conflicts": ["fasteredge2api"],
+      "notes": "与 FasterEdge2Api 默认端口相同，同时装载需显式改端口。"
+    },
+    {
+      "name": "fasteredge2api",
+      "display": "FasterEdge2Api 网关",
+      "summary": "把 FasterEdge 节点装配成可远程管理的 HTTP API 网关，含拓扑、集群角色与 OneKey 令牌认证。",
+      "kind": "service",
+      "repos": { "default": "FasterEdge/FasterEdge2Api" },
+      "stems": { "default": "fasteredge2api" },
+      "binaries": { "default": "fasteredge2api", "windows": "fasteredge2api.exe" },
+      "archs": ["amd64", "arm64"],
+      "ports": [8080],
+      "conflicts": ["netmap"]
+    },
+    {
+      "name": "proxyarea",
+      "display": "ProxyArea 代理",
+      "summary": "请求协议转发与代理领域服务，适用于常规协议转换与边缘转发。",
+      "kind": "service",
+      "repos": { "default": "FasterEdge/ProxyArea" },
+      "stems": { "default": "proxyarea" },
+      "binaries": { "default": "proxyarea", "windows": "proxyarea.exe" },
+      "archs": ["amd64", "arm64"],
+      "ports": [8080]
+    },
+    {
+      "name": "rtsp2other",
+      "display": "RTSP 流转发",
+      "summary": "RTSP 视频流转换/转发工具。",
+      "kind": "service",
+      "repos": { "default": "FasterEdge/RTSP2Other" },
+      "stems": { "default": "rtsp2other" },
+      "binaries": { "default": "rtsp2other", "windows": "rtsp2other.exe" },
+      "archs": ["amd64", "arm64"]
+    },
+    {
+      "name": "dontcrack-manager",
+      "display": "DontCrack-Manager 多进程总管",
+      "summary": "多 DontCrack 进程的总管理器，用于需要管理多个进程管理器的场景。",
+      "kind": "service",
+      "repos": { "default": "FasterEdge/DontCrack-Manager" },
+      "stems": { "default": "dontcrack-manager" },
+      "binaries": { "default": "dontcrack-manager", "windows": "dontcrack-manager.exe" },
+      "archs": ["amd64", "arm64"],
+      "ports": [11884]
+    },
+    {
+      "name": "fasteredge-doctor",
+      "display": "FasterEdgeDoctor 自检",
+      "summary": "仓库与远端节点的健康诊断工具；可作为一次性命令行使用，也可起只读 HTTP 检查服务。",
+      "kind": "tool",
+      "repos": { "default": "FasterEdge/FasterEdgeDoctor" },
+      "stems": { "default": "fasteredge-doctor" },
+      "binaries": { "default": "fasteredge-doctor", "windows": "fasteredge-doctor.exe" },
+      "archs": ["amd64", "arm64"],
+      "ports": [7080]
+    },
+    {
+      "name": "any2utf8",
+      "display": "Any2UTF8 编码转换",
+      "summary": "文本与文件转 UTF-8 的单次命令行工具。",
+      "kind": "tool",
+      "repos": { "default": "FasterEdge/Any2UTF8" },
+      "stems": { "default": "any2utf8" },
+      "binaries": { "default": "any2utf8", "windows": "any2utf8.exe" },
+      "archs": ["amd64", "arm64"]
+    },
+    {
+      "name": "any2pcd",
+      "display": "Any2Pcd 点云转换",
+      "summary": "多种点云文件转 PCD 且保持时序的单次命令行工具。",
+      "kind": "tool",
+      "repos": { "default": "FasterEdge/Any2Pcd" },
+      "stems": { "default": "any2pcd" },
+      "binaries": { "default": "any2pcd", "windows": "any2pcd.exe" },
+      "archs": ["amd64", "arm64"]
+    },
+    {
+      "name": "fasteredge-demo",
+      "display": "FasterEdge 框架示例",
+      "summary": "FasterEdge 框架自身的示例节点，用于验证框架装配与生命周期。",
+      "kind": "tool",
+      "repos": { "default": "FasterEdge/FasterEdge" },
+      "stems": { "default": "fasteredge-demo" },
+      "binaries": { "default": "fasteredge-demo", "windows": "fasteredge-demo.exe" },
+      "archs": ["amd64", "arm64"]
+    }
+  ]
+}

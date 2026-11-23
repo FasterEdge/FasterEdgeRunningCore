@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  vet-test:
+    name: '静态检查 + 单元测试'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.27.4'
+      - name: 'gofmt 检查'
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "以下文件未格式化："
+            echo "$unformatted"
+            exit 1
+          fi
+      - name: 'go vet'
+        run: go vet ./...
+      - name: 'go test'
+        run: go test -count=1 ./...
+
+  race:
+    name: '竞态检测'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.27.4'
+      - name: 'go test -race'
+        run: go test -race -count=1 ./...
+
+  cross-build:
+    name: '跨平台编译 ${{ matrix.target }}'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: linux-amd64, goos: linux, goarch: amd64, ext: '' }
+          - { target: linux-arm64, goos: linux, goarch: arm64, ext: '' }
+          - { target: linux-armv7, goos: linux, goarch: arm, ext: '' }
+          - { target: darwin-amd64, goos: darwin, goarch: amd64, ext: '' }
+          - { target: darwin-arm64, goos: darwin, goarch: arm64, ext: '' }
+          - { target: windows-amd64, goos: windows, goarch: amd64, ext: .exe }
+          - { target: windows-arm64, goos: windows, goarch: arm64, ext: .exe }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.27.4'
+      # 运行核的价值在于“任意平台都能跑”，因此每个受支持平台都必须能被编译，
+      # 且编译后的二进制要真的能回答 --help —— 只编译不执行会漏掉 init 分支的
+      # 构建错误。
+      - name: '编译 ${{ matrix.target }}'
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "ferc${{ matrix.ext }}" ./cmd/ferc
+      - name: '本机可执行时验证 --help'
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        run: ./ferc --help > /dev/null
+      - uses: actions/upload-artifact@v7
+        with:
+          name: 'ferc-${{ matrix.target }}'
+          path: 'ferc${{ matrix.ext }}'
+          if-no-files-found: 'error'
+          retention-days: 1
