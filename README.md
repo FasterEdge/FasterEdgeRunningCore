@@ -199,6 +199,18 @@ docker run --rm -v /:/host ferc detect
 
 镜像本身不常驻，只是一个随身携带 `ferc` 的干净环境：既可以在容器里对宿主机做探测与装载，也可以作为 CI 里的发布工具。容器内保留 `ca-certificates` 与 `tar`，因此 `bootstrap` 能完整跑通。
 
+国内网络直连 Docker Hub 常超时，基础镜像走 registry mirror 的 `MIRROR` 构建参数，不必改 Dockerfile：
+
+```bash
+# 走 1ms.run（注意：该站点可能要求登录，匿名拉取会返回 401）
+docker build --build-arg MIRROR=docker.1ms.run/ -t ferc .
+
+# 换一个匿名可用的站点
+docker build --build-arg MIRROR=docker.1panel.live/ -t ferc .
+```
+
+不传 `MIRROR` 时走 Docker Hub 官方源，行为与从前完全一致。
+
 ### 十一、项目结构
 
 ```

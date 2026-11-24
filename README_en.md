@@ -199,6 +199,18 @@ docker run --rm -v /:/host ferc detect
 
 The image is not resident either — it is only a portable environment that carries `ferc`: useful for detecting and installing on the host from inside a container, and as a release tool in CI. `ca-certificates` and `tar` are kept inside the image so `bootstrap` runs end to end.
 
+Docker Hub is often unreachable or slow from some networks, so the base images go through a registry mirror selected by the `MIRROR` build argument — no Dockerfile edit required:
+
+```bash
+# Use 1ms.run (note: this site may require login; anonymous pulls return 401)
+docker build --build-arg MIRROR=docker.1ms.run/ -t ferc .
+
+# Or another site that allows anonymous pulls
+docker build --build-arg MIRROR=docker.1panel.live/ -t ferc .
+```
+
+Omitting `MIRROR` pulls from Docker Hub, exactly as before.
+
 ### 11. Project layout
 
 ```
