@@ -25,44 +25,9 @@ package artifact
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
-)
-
-// ModuleInfo 是内核模块的解析结果。
-type ModuleInfo struct {
-	// Arch 是由 ELF e_machine 推出的架构名（归一后，与 model.Arch 同一套名字）。
-	Arch string
-	// Vermagic 是 .modinfo 里 vermagic= 的原始值。精确比对用。
-	Vermagic string
-	// Release 是 vermagic 的首个空格前的部分，即内核版本，例如 6.6.0。
-	Release string
-	// Flags 是 .modinfo 里其余键值对，例如 depends、name、vermagic。
-	Flags map[string]string
-	// Depends 是模块依赖列表，来自 depends= 字段（逗号分隔）。
-	Depends []string
-	// Name 是模块名，来自 name= 字段；缺该字段时为空。
-	Name string
-}
-
-// ELFInfo 是普通 ELF 可执行文件/共享库的解析结果。
-type ELFInfo struct {
-	// Arch 是由 ELF e_machine 推出的架构名。
-	Arch string
-	// Static 为真表示没有 PT_INTERP 段，即静态链接。
-	Static bool
-	// Interp 是 PT_INTERP 段指向的解释器路径（动态链接时非空）。
-	Interp string
-}
-
-// 三类必须可区分的错误。实现方要给每一类一个可识别的哨兵，
-// 调用方要能分别处置，不允许合成一个 "parse failed"。
-var (
-	// ErrNoModinfo 表示 ELF 里没有 .modinfo 段。
-	ErrNoModinfo = errors.New("artifact: ELF 缺少 .modinfo 段")
-	// ErrNoVermagic 表示有 .modinfo 段但段内没有 vermagic 键。
-	ErrNoVermagic = errors.New("artifact: .modinfo 段内没有 vermagic")
-	// ErrUnexpectedMachine 表示 e_machine 不是预期的架构。
-	ErrUnexpectedMachine = errors.New("artifact: 非预期的 ELF e_machine")
 )
 
 // F1-1：ParseModule 必须能从合成的 .ko 里取出全部字段。
