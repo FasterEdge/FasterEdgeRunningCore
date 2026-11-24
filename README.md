@@ -24,6 +24,7 @@ FERC（FasterEdge Running Core，运行核）是一个**不常驻**的单点式�
 - **应用商店式装载**：`ferc list` 看有什么，`ferc install <组件>` 装什么。组件清单内嵌在二进制里，也可用 `--catalog` 指向外部文件覆盖，新增组件不需要重新编译运行核。
 - **不通外网也能装**：`ferc mirror export` 导出一份可整体搬迁的目录，U 盘直接拷、或由上游节点 `ferc mirror serve` 提供 HTTP 服务，下游全程不需要外网、也不需要任何凭据。
 - **重启后自己回来**：装载成功即落盘开机自启（systemd / openrc / sysvinit / launchd / 计划任务 / autorun 六种机制），重启后 `ferc restore` 按 `ferc-state.json` 重放托管关系。
+- **改错了能退回去**：`ferc snapshot create` 打点、`ferc snapshot restore` 把整台端（二进制 + 状态 + 托管关系）退回到那个点。装载事务回滚只管一次安装中途失败，快照管的是装载成功之后的所有事故。
 - **19 个目标平台**：linux ×14（含 armv6/armv7、loong64、mips×4、ppc64×2、riscv64、s390x）+ darwin ×2 + windows ×3。
 
 ### 三、快速开始
@@ -72,6 +73,7 @@ ferc remove simple-web-shell
 | `ferc restore` | 重启后按 `ferc-state.json` 重放托管关系（开机自启就是调它） |
 | `ferc boot enable\|disable\|status` | 落盘 / 撤销 / 查看开机自启 |
 | `ferc mirror export\|serve` | 导出 / 分享离线镜像（给不通外网的节点取包） |
+| `ferc snapshot create\|list\|restore\|delete` | 打快照 / 列快照 / 回归到快照 / 删快照 |
 | `ferc detect` | 打印平台探测结果与保活能力判定 |
 | `ferc version` | 打印版本 |
 
@@ -102,10 +104,11 @@ ferc remove simple-web-shell
 │   └── simple-web-shell
 ├── logs/                    各组件的日志目录
 ├── ferc-state.json          已装载清单（唯一的“记忆”）
+├── snapshots/               环境快照（改坏了可以回归）
 └── .ferc-stage-*/           安装期间的暂存目录（成功/失败都会清理）
 ```
 
-`ferc-state.json` 记录了每个组件的名字、版本、路径、启动参数、托管方、控制端口与单元名。运行核本身不常驻，因此**这个文件就是节点的安装事实**——`status`、`verify`、`remove`、`restore` 都以它为准。
+`ferc-state.json` 记录了每个组件的名字、版本、路径、启动参数、托管方、控制端口与单元名。运行核本身不常驻，因此**这个文件就是节点的安装事实**——`status`、`verify`、`remove`、`restore` 都以它为准。`snapshot restore` 则用一份历史副本整体替换它，实现“回到某个已知良好状态”。
 
 ### 六、组件清单
 
@@ -138,6 +141,42 @@ ferc remove simple-web-shell
 - **不给 supervisor 套 supervisor**：进程管理器自身标记为 `self`，避免保活链成环。
 - **多服务端口隔离**：DontCrack 一个实例只托管一个进程、只占一个控制端口，第 n 个自托管服务用基准端口 + n，不会互相抢端口。
 - **事务式安装**：每一步先在暂存目录完成“下载 → 校验 → 解包 → 挑出可执行文件”，全部成功才原子落到最终路径；任一步失败即回滚，不会留下半装状态。
+- **快照自校验**：打快照时给每个二进制算 SHA256，回归时逐字节核对；对不上就直接失败，且**不改状态文件**，不会把节点留在“文件是新的、状态是旧的”中间态。
+
+### 七·五、改错了怎么退回去
+
+装载事务回滚只覆盖“一次 `install` 中途失败”，命令一退出就失效。现实中更多的事故发生在装载成功之后：改错端口、删了配置、装了个不兼容的新版本。快照就是为此设计的：
+
+```bash
+# 动手前打点
+ferc snapshot create --note "集群上线前的完好状态"
+
+# 看有哪些点（含来源主机、组件数、体积、二进制是否完整）
+ferc snapshot list
+
+# 整台端退回到那个点：二进制逐个还原并校验，状态文件整体替换，托管关系一并重建
+ferc snapshot restore <id>        # 不带 id 用最新的一份
+
+# 清理
+ferc snapshot delete <id>         # 或 --all
+```
+
+几个刻意的设计：
+
+- **状态文件是整体替换，不是逐条合并。** 合并会让“回归”变成“打补丁”——快照之后才装上去的组件会留下来，节点既不是过去也不是现在。整体替换才能保证“回到那个状态”这句话是真的。
+- **二进制和状态一起存。** 只存状态文件不够：`ferc remove` 会把二进制删掉，快照必须连 `bin/` 下的可执行文件一起收，否则回到的状态缺文件。
+- **跨平台回归直接拒绝。** 快照记录了打点时的 GOOS/Arch，与目标不一致就报错——把 linux 的二进制还原到 windows 上只会得到一堆起不来的服务。校验用的是**探测到的目标平台**而不是 `runtime.GOOS`，因此“在 Windows 工作站上管理一台 Linux 节点”这套正当用法不会被挡掉。
+- **快照不存组件自己生成的配置与凭据。** 那些是运行时产物，存它们会让“回到过去”把后来产生的数据一起倒回去。
+- **校验失败时状态文件保持原样。** 先还原并校验所有二进制，全部通过才动状态文件。
+
+快照目录与镜像目录同一套哲学：只记相对位置、不记绝对地址，因此整份目录可以拷到 U 盘、可以 `mirror export` 带走、也可以在另一台同架构的机器上还原（换根目录时会自动改写并给出告警）。
+
+```
+<root>/snapshots/<id>/
+├── snapshot.json                 元数据：时间、备注、来源主机、各组件版本与 SHA256
+├── ferc-state.json               打点时的状态文件副本（回归时整体替换当前状态）
+└── bin/<组件名>[.exe]            各组件可执行文件
+```
 
 ### 八、不通外网的节点怎么取包
 
@@ -226,7 +265,8 @@ docker build --build-arg MIRROR=docker.1panel.live/ -t ferc .
 │   ├── supervise/               托管注册：systemd/openrc/sysv/launchd/schtasks/dontcrack
 │   ├── state/                   ferc-state.json 读写（原子写）
 │   ├── mirror/                  离线镜像：导出 / 本地与 HTTP 读取 / 多源链
-│   └── boot/                    开机自启方案渲染（六种机制，纯函数）
+│   ├── boot/                    开机自启方案渲染（六种机制，纯函数）
+│   └── snapshot/                环境快照：打点、SHA256 校验、整体回归
 ├── .github/workflows/
 │   ├── ci.yml                   gofmt / vet / test / race / 19 路交叉编译
 │   └── release.yml              交叉编译打包 + Release 发布

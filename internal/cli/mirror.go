@@ -144,15 +144,31 @@ func cmdMirrorServe(ctx context.Context, args []string, env Env) int {
 	return 0
 }
 
-// mirrorRepos 决定这次要导出哪些仓库：显式给了位置参数就用它，
-// 否则取内置清单里全部组件。
+// mirrorRepos 决定这次要导出哪些仓库。
+//
+// 位置参数给的是**组件名**（用户在 ferc list 里看到的那个），必须经清单翻成
+// owner/name 才能拿去问 GitHub：组件名是小写连字符（any2utf8），仓库名是
+// 组织下的驼峰（FasterEdge/Any2UTF8），两者不是一回事。直接拿组件名当仓库名
+// 会得到一个空镜像，而且失败被记成告警、不报错，现场很难看出问题。
 func mirrorRepos(c common, want []string) ([]string, error) {
-	if len(want) > 0 {
-		return want, nil
-	}
 	cat, err := c.loadCatalog()
 	if err != nil {
 		return nil, err
+	}
+	if len(want) > 0 {
+		out := make([]string, 0, len(want))
+		for _, name := range want {
+			comp, ok := cat.Get(name)
+			if !ok {
+				return nil, fmt.Errorf("未知组件 %q（用 ferc list 看有哪些）", name)
+			}
+			repo := comp.Repo(runtime.GOOS)
+			if repo == "" {
+				return nil, fmt.Errorf("组件 %q 没有 %s 平台的产物仓库", name, runtime.GOOS)
+			}
+			out = append(out, repo)
+		}
+		return out, nil
 	}
 	out := make([]string, 0, len(cat.Components))
 	for _, m := range cat.Components {

@@ -24,6 +24,7 @@ In one line: **one install command, and you almost never touch this endpoint aga
 - **App-store style loading**: `ferc list` shows what is available, `ferc install <component>` installs it. The component catalog is embedded in the binary and can be overridden with `--catalog`, so adding a component does not require recompiling the running core.
 - **Works without internet**: `ferc mirror export` produces a relocatable directory — copy it on a USB stick, or let an upstream node serve it over HTTP with `ferc mirror serve`. The downstream node needs neither internet nor credentials.
 - **Comes back after reboot**: a successful install writes the boot hook (systemd / openrc / sysvinit / launchd / Task Scheduler / autorun), and `ferc restore` replays supervision from `ferc-state.json` on the next boot.
+- **Mistakes are reversible**: `ferc snapshot create` takes a point, `ferc snapshot restore` rolls the whole node back to it — binaries, state file and supervision together. Install-time rollback only covers an install that failed halfway; snapshots cover everything that happens after a successful install.
 - **19 target platforms**: linux ×14 (including armv6/armv7, loong64, mips ×4, ppc64 ×2, riscv64, s390x) + darwin ×2 + windows ×3.
 
 ### 3. Quick start
@@ -72,6 +73,7 @@ Running without root works too: add `--no-start` to write files without register
 | `ferc restore` | Replay supervision from `ferc-state.json` after a reboot (this is what the boot hook runs) |
 | `ferc boot enable\|disable\|status` | Write / remove / inspect the boot hook |
 | `ferc mirror export\|serve` | Export / share an offline mirror (for nodes without internet) |
+| `ferc snapshot create\|list\|restore\|delete` | Take / list / restore to / delete an environment snapshot |
 | `ferc detect` | Print platform detection and the supervision verdict |
 | `ferc version` | Print the version |
 
@@ -102,10 +104,11 @@ Exit codes: `0` success, `1` execution failure or failed verification, `2` inval
 │   └── simple-web-shell
 ├── logs/                    per-component log directories
 ├── ferc-state.json          the installed manifest (the only "memory")
+├── snapshots/               environment snapshots (roll back after a mistake)
 └── .ferc-stage-*/           staging directories during install (cleaned on success and failure)
 ```
 
-`ferc-state.json` records each component's name, version, path, launch arguments, supervisor, control port and unit name. The running core is not resident, so **this file is the installation fact of the node** — `status`, `verify`, `remove` and `restore` all read it.
+`ferc-state.json` records each component's name, version, path, launch arguments, supervisor, control port and unit name. The running core is not resident, so **this file is the installation fact of the node** — `status`, `verify`, `remove` and `restore` all read it. `snapshot restore` replaces it wholesale with a historical copy, which is what "back to a known-good state" means.
 
 ### 6. Component catalog
 
@@ -138,6 +141,43 @@ Each entry declares its repository, artifact naming rule, unpacked executable na
 - **No supervisor for the supervisor**: the process manager marks itself `self`, so the supervision chain cannot loop.
 - **Per-service port isolation**: one DontCrack instance supervises exactly one process and holds exactly one control port, so the n-th self-hosted service uses base port + n and never fights over a port.
 - **Transactional install**: every step completes "download → verify → unpack → extract executable" in a staging directory first, and only then is the final path written atomically. Any failure rolls back, so no half-installed state is left behind.
+- **Snapshots self-checksum**: a snapshot records a SHA256 for every binary and re-verifies byte for byte on restore. A mismatch fails the restore outright and **leaves the state file untouched**, so the node is never left in a "new files, old state" limbo.
+
+#### Undoing a mistake
+
+Install-time rollback only covers "an `install` failed halfway"; it stops working the moment the command exits. Most real incidents happen *after* a successful install: a wrong port, a deleted config, an incompatible new version. Snapshots exist for exactly that:
+
+```bash
+# Take a point before touching anything
+ferc snapshot create --note "known-good before cluster rollout"
+
+# See the points (source host, component count, size, binary completeness)
+ferc snapshot list
+
+# Roll the whole node back: binaries restored and verified, state file replaced
+# wholesale, supervision rebuilt
+ferc snapshot restore <id>        # no id means the latest
+
+# Housekeeping
+ferc snapshot delete <id>         # or --all
+```
+
+A few deliberate choices:
+
+- **The state file is replaced wholesale, not merged.** Merging would turn "restore" into "patching" — components installed after the snapshot would survive, leaving the node neither past nor present. Wholesale replacement is what makes "back to that state" actually true.
+- **Binaries are stored alongside the state.** State alone is not enough: `ferc remove` deletes the binaries, so a snapshot must capture the executables under `bin/` too, or the restored state points at missing files.
+- **Cross-platform restores are refused outright.** A snapshot records the GOOS/Arch it was taken on and errors out on mismatch — restoring linux binaries onto windows only yields services that cannot start. The check uses the **detected target platform**, not `runtime.GOOS`, so the legitimate "manage a Linux node from a Windows workstation" flow is not blocked.
+- **Snapshots do not store component-generated config or credentials.** Those are runtime artifacts; storing them would make "going back" also revert data produced since.
+- **A verification failure leaves the state file as it was.** Binaries are restored and verified first; the state file is only touched once every binary checks out.
+
+Snapshot directories follow the same philosophy as mirror directories: relative locations only, no absolute addresses. The whole directory can be copied to a USB stick, exported with `mirror export`, or restored on another machine of the same architecture (the root is rewritten automatically, with a warning).
+
+```
+<root>/snapshots/<id>/
+├── snapshot.json                 metadata: time, note, source host, per-component version + SHA256
+├── ferc-state.json               the state file as it was (replaces the current one on restore)
+└── bin/<component>[.exe]         component executables
+```
 
 ### 8. Nodes without internet access
 
@@ -226,7 +266,8 @@ Omitting `MIRROR` pulls from Docker Hub, exactly as before.
 │   ├── supervise/               supervision registration: systemd/openrc/sysv/launchd/schtasks/dontcrack
 │   ├── state/                   ferc-state.json read/write (atomic)
 │   ├── mirror/                  offline mirror: export / local and HTTP reads / multi-source chain
-│   └── boot/                    boot hook rendering (six mechanisms, pure functions)
+│   ├── boot/                    boot hook rendering (six mechanisms, pure functions)
+│   └── snapshot/                environment snapshots: capture, SHA256 verification, wholesale restore
 ├── .github/workflows/
 │   ├── ci.yml                   gofmt / vet / test / race / 19 cross-compiles
 │   └── release.yml              cross-compile packaging + release publishing

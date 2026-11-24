@@ -1152,3 +1152,207 @@ func TestUsageMentionsRestoreAndBoot(t *testing.T) {
 		}
 	}
 }
+
+// ── snapshot ───────────────────────────────────────────────
+
+// snapState 造一份“已装载两个组件”的状态，二进制真的写到磁盘。
+func snapState(t *testing.T, root string) {
+	t.Helper()
+	binDir := filepath.Join(root, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	st := state.New("linux", "amd64", "edge-01", root)
+	for _, n := range []string{"alpha", "beta"} {
+		p := filepath.Join(binDir, n)
+		if err := os.WriteFile(p, []byte("binary-of-"+n), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		st.Put(state.Record{Name: n, Version: "v1", Kind: "service", Path: p,
+			Supervisor: "systemd", Unit: "ferc-" + n})
+	}
+	if err := st.Save(state.Path(root)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSnapshotCreateListDelete(t *testing.T) {
+	env, out, errb := testEnv(t, linuxInfo(platform.InitSystemd))
+	root := env.DefaultRoot
+	snapState(t, root)
+
+	if code := Run(context.Background(), []string{"snapshot", "create", "--note", "升级前"}, env); code != 0 {
+		t.Fatalf("create 退出码 = %d\n%s%s", code, out.String(), errb.String())
+	}
+	if !strings.Contains(out.String(), "alpha") || !strings.Contains(out.String(), "beta") {
+		t.Fatalf("create 应逐组件汇报\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "升级前") {
+		t.Fatalf("create 应显示备注\n%s", out.String())
+	}
+	_ = errb
+
+	out.Reset()
+	if code := Run(context.Background(), []string{"snapshot", "list"}, env); code != 0 {
+		t.Fatalf("list 退出码 = %d\n%s%s", code, out.String(), errb.String())
+	}
+	if !strings.Contains(out.String(), "alpha") == false {
+		// list 输出里不含组件名，只含计数；这里确认计数与来源机器信息在场。
+		_ = out.String()
+	}
+	if !strings.Contains(out.String(), "2 个组件") {
+		t.Fatalf("list 应显示组件数\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "@edge-01") {
+		t.Fatalf("list 应显示来源主机\n%s", out.String())
+	}
+
+	// JSON 形态要能被机器读回来。
+	envJSON, outJSON, _ := testEnv(t, linuxInfo(platform.InitSystemd))
+	envJSON.DefaultRoot = root
+	if code := Run(context.Background(), []string{"snapshot", "list", "--json"}, envJSON); code != 0 {
+		t.Fatalf("list --json 退出码 = %d", code)
+	}
+	var rep struct {
+		Snapshots []struct {
+			ID         string `json:"id"`
+			Components int    `json:"components"`
+			Missing    int    `json:"missing"`
+		} `json:"snapshots"`
+	}
+	if err := json.Unmarshal(outJSON.Bytes(), &rep); err != nil {
+		t.Fatalf("list --json 输出不是合法 JSON: %v\n%s", err, outJSON.String())
+	}
+	if len(rep.Snapshots) != 1 || rep.Snapshots[0].Components != 2 {
+		t.Fatalf("JSON 里应有 1 份快照、2 个组件: %+v", rep.Snapshots)
+	}
+
+	// 删掉。
+	out.Reset()
+	if code := Run(context.Background(), []string{"snapshot", "delete", rep.Snapshots[0].ID}, env); code != 0 {
+		t.Fatalf("delete 退出码 = %d\n%s%s", code, out.String(), errb.String())
+	}
+	out.Reset()
+	Run(context.Background(), []string{"snapshot", "list"}, env)
+	if !strings.Contains(out.String(), "没有快照") {
+		t.Fatalf("删除后应显示没有快照\n%s", out.String())
+	}
+}
+
+func TestSnapshotCreateOnEmptyState(t *testing.T) {
+	env, _, errb := testEnv(t, linuxInfo(platform.InitSystemd))
+	// 没有装载任何组件：打一个空快照没有意义，应明确拒绝。
+	if code := Run(context.Background(), []string{"snapshot", "create"}, env); code != 1 {
+		t.Fatalf("空状态应退出 1，实际 %d\n%s", code, errb.String())
+	}
+	if !strings.Contains(errb.String(), "没有已装载的组件") {
+		t.Fatalf("应说明为什么拒绝\n%s", errb.String())
+	}
+}
+
+func TestSnapshotRestoreRollsBack(t *testing.T) {
+	env, out, errb := testEnv(t, linuxInfo(platform.InitSystemd))
+	env.Supervisor = func(info platform.Info, root string) *supervise.Manager {
+		return newRecordManager(info.Init).manager(root)
+	}
+	root := env.DefaultRoot
+	snapState(t, root)
+
+	if code := Run(context.Background(), []string{"snapshot", "create"}, env); code != 0 {
+		t.Fatalf("create 失败: %d\n%s%s", code, out.String(), errb.String())
+	}
+
+	// 改坏：二进制被换掉，状态里多一个组件。
+	if err := os.WriteFile(filepath.Join(root, "bin", "alpha"), []byte("BROKEN"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	st, err := state.Load(state.Path(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Put(state.Record{Name: "gamma", Version: "v9", Kind: "tool", Path: filepath.Join(root, "bin", "gamma")})
+	if err := st.Save(state.Path(root)); err != nil {
+		t.Fatal(err)
+	}
+
+	out.Reset()
+	errb.Reset()
+	if code := Run(context.Background(), []string{"snapshot", "restore"}, env); code != 0 {
+		t.Fatalf("restore 退出码 = %d\n%s%s", code, out.String(), errb.String())
+	}
+	// 二进制回到快照内容。
+	b, err := os.ReadFile(filepath.Join(root, "bin", "alpha"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != "binary-of-alpha" {
+		t.Fatalf("二进制应回到快照内容: %q", b)
+	}
+	// 状态整体替换：gamma 消失。
+	after, err := state.Load(state.Path(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := after.Get("gamma"); ok {
+		t.Fatal("回归后 gamma 应消失")
+	}
+	if len(after.Components) != 2 {
+		t.Fatalf("回归后应只有 2 个组件: %+v", after.Components)
+	}
+	// 回归后托管关系应被重建（recordManager 会记下 Register 的调用）。
+	if !strings.Contains(out.String(), "已回归到快照") {
+		t.Fatalf("应汇报回归结果\n%s", out.String())
+	}
+}
+
+func TestSnapshotRestoreUnknownID(t *testing.T) {
+	env, _, errb := testEnv(t, linuxInfo(platform.InitSystemd))
+	snapState(t, env.DefaultRoot)
+	if code := Run(context.Background(), []string{"snapshot", "restore", "no-such-id"}, env); code != 1 {
+		t.Fatalf("不存在的快照应退出 1，实际 %d\n%s", code, errb.String())
+	}
+	if !strings.Contains(errb.String(), "回归失败") {
+		t.Fatalf("应说明回归失败\n%s", errb.String())
+	}
+}
+
+func TestSnapshotDeleteAll(t *testing.T) {
+	env, out, errb := testEnv(t, linuxInfo(platform.InitSystemd))
+	root := env.DefaultRoot
+	snapState(t, root)
+	for i := 0; i < 3; i++ {
+		if code := Run(context.Background(), []string{"snapshot", "create"}, env); code != 0 {
+			t.Fatalf("create %d 失败: %d", i, code)
+		}
+	}
+	out.Reset()
+	if code := Run(context.Background(), []string{"snapshot", "delete", "--all"}, env); code != 0 {
+		t.Fatalf("delete --all 退出码 = %d\n%s%s", code, out.String(), errb.String())
+	}
+	if !strings.Contains(out.String(), "已删除 3 份快照") {
+		t.Fatalf("应报删除数量\n%s", out.String())
+	}
+}
+
+func TestSnapshotUnknownSubcommand(t *testing.T) {
+	env, _, errb := testEnv(t, linuxInfo(platform.InitSystemd))
+	if code := Run(context.Background(), []string{"snapshot", "frobnicate"}, env); code != 2 {
+		t.Fatalf("未知子命令应退出 2，实际 %d", code)
+	}
+	if code := Run(context.Background(), []string{"snapshot"}, env); code != 2 {
+		t.Fatalf("无子命令应退出 2，实际 %d", code)
+	}
+	if !strings.Contains(errb.String(), "snapshot") {
+		t.Fatalf("应提示用法\n%s", errb.String())
+	}
+}
+
+func TestUsageMentionsSnapshot(t *testing.T) {
+	env, out, _ := testEnv(t, linuxInfo(platform.InitSystemd))
+	Run(context.Background(), []string{"help"}, env)
+	for _, want := range []string{"ferc snapshot", "create|list|restore|delete", "snapshot restore <id>"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("用法里应有 %q\n%s", want, out.String())
+		}
+	}
+}

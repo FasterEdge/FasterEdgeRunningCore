@@ -129,6 +129,8 @@ func Run(ctx context.Context, args []string, env Env) int {
 		return cmdBoot(ctx, rest, env)
 	case "mirror":
 		return cmdMirror(ctx, rest, env)
+	case "snapshot":
+		return cmdSnapshot(ctx, rest, env)
 	default:
 		fmt.Fprintf(env.stderr(), "未知子命令 %q\n\n", cmd)
 		printUsage(env.stderr())
@@ -150,6 +152,8 @@ func printUsage(w io.Writer) {
   ferc boot     enable|disable|status
                                落盘 / 撤销 / 查看开机自启
   ferc mirror   export|serve     导出 / 分享离线镜像（给不通外网的节点取包）
+  ferc snapshot create|list|restore|delete
+                               打快照 / 列快照 / 回归到快照 / 删快照
   ferc detect                  打印平台探测结果
   ferc version                 打印版本
 
@@ -172,6 +176,11 @@ func printUsage(w io.Writer) {
   1. 在上网节点     ferc mirror export --dir /media/usb/ferc-mirror
   2. 把目录拷到目标（U 盘），或在上网节点 ferc mirror serve --dir <同一目录>
   3. 在目标节点     ferc install <组件> --from <目录|http://上游:8090>
+
+改错了怎么退回去：
+  ferc snapshot create --note "升级前"     # 动手前打点
+  ferc snapshot list                      # 看有哪些点
+  ferc snapshot restore <id>              # 整台端退回到那个点（托管关系一并重建）
 `)
 }
 
