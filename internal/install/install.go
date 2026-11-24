@@ -40,7 +40,7 @@ type Logger interface {
 
 // Options 是安装器配置。
 type Options struct {
-	// Root 是运行核数据根目录（bin/、cache/、logs/、ferc-state.json 都在其下）。
+	// Root 是运行核数据根目录（bin/、logs/、ferc-state.json 都在其下）。
 	Root string
 	// Info 是目标平台探测结果，用于写入状态文件，让节点“自述身份”。
 	Info platform.Info
