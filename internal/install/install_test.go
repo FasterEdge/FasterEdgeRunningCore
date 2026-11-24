@@ -102,7 +102,7 @@ func TestApplyInstallsTool(t *testing.T) {
 	root := t.TempDir()
 	client := fetch.New("")
 	client.BaseURL = srv.URL
-	inst, err := New(Options{Root: root, Fetcher: client})
+	inst, err := New(Options{Root: root, Source: client})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +162,7 @@ func TestApplyWithoutSumFileSaysSo(t *testing.T) {
 	root := t.TempDir()
 	client := fetch.New("")
 	client.BaseURL = srv.URL
-	inst, _ := New(Options{Root: root, Fetcher: client})
+	inst, _ := New(Options{Root: root, Source: client})
 	log := &captureLogger{}
 	inst.log = log
 	if _, err := inst.Apply(context.Background(), plan); err != nil {
@@ -184,7 +184,7 @@ func TestApplyFailsOnMissingAsset(t *testing.T) {
 	root := t.TempDir()
 	client := fetch.New("")
 	client.BaseURL = srv.URL
-	inst, _ := New(Options{Root: root, Fetcher: client})
+	inst, _ := New(Options{Root: root, Source: client})
 	inst.log = &captureLogger{}
 	_, err := inst.Apply(context.Background(), plan)
 	if err == nil {
@@ -223,7 +223,7 @@ func TestApplyFailsOnChecksumMismatch(t *testing.T) {
 	root := t.TempDir()
 	client := fetch.New("")
 	client.BaseURL = s.URL
-	inst, _ := New(Options{Root: root, Fetcher: client})
+	inst, _ := New(Options{Root: root, Source: client})
 	inst.log = &captureLogger{}
 	_, err := inst.Apply(context.Background(), plan)
 	if err == nil {
@@ -271,7 +271,7 @@ func TestApplyNoSupervisorSkipsRegistration(t *testing.T) {
 	root := t.TempDir()
 	client := fetch.New("")
 	client.BaseURL = srv.URL
-	inst, _ := New(Options{Root: root, Fetcher: client}) // Supervisor 为 nil
+	inst, _ := New(Options{Root: root, Source: client}) // Supervisor 为 nil
 	log := &captureLogger{}
 	inst.log = log
 	recs, err := inst.Apply(context.Background(), plan)
@@ -302,7 +302,7 @@ func TestApplyRollsBackOnSecondStepFailure(t *testing.T) {
 	root := t.TempDir()
 	client := fetch.New("")
 	client.BaseURL = srv.URL
-	inst, _ := New(Options{Root: root, Fetcher: client})
+	inst, _ := New(Options{Root: root, Source: client})
 	inst.log = &captureLogger{}
 	if _, err := inst.Apply(context.Background(), plan); err == nil {
 		t.Fatal("第二步失败必须整体失败")
@@ -343,7 +343,7 @@ func TestApplyRegistersService(t *testing.T) {
 		MkdirAll: func(p string, perm os.FileMode) error { return os.MkdirAll(p, perm) },
 		Root:     root,
 	}
-	inst, err := New(Options{Root: root, Fetcher: client, Supervisor: mgr})
+	inst, err := New(Options{Root: root, Source: client, Supervisor: mgr})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -397,7 +397,7 @@ func TestApplySkipsRegistrationForSupervisorKind(t *testing.T) {
 		MkdirAll: func(p string, perm os.FileMode) error { return os.MkdirAll(p, perm) },
 		Root:     root,
 	}
-	inst, err := New(Options{Root: root, Fetcher: client, Supervisor: mgr})
+	inst, err := New(Options{Root: root, Source: client, Supervisor: mgr})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -423,7 +423,7 @@ func TestApplyGeneratesSecretForRequiredArg(t *testing.T) {
 	root := t.TempDir()
 	client := fetch.New("")
 	client.BaseURL = srv.URL
-	inst, err := New(Options{Root: root, Fetcher: client})
+	inst, err := New(Options{Root: root, Source: client})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -476,7 +476,7 @@ func TestApplyGeneratesDistinctSecrets(t *testing.T) {
 		root := t.TempDir()
 		client := fetch.New("")
 		client.BaseURL = srv.URL
-		inst, err := New(Options{Root: root, Fetcher: client})
+		inst, err := New(Options{Root: root, Source: client})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -554,7 +554,7 @@ func TestApplyRecordsDistinctControlPortsForMultipleServices(t *testing.T) {
 	inst, err := New(Options{
 		Root:       root,
 		Info:       platform.Info{GOOS: "linux", GOARCH: "amd64", Init: platform.InitNone},
-		Fetcher:    client,
+		Source:     client,
 		Supervisor: mgr,
 	})
 	if err != nil {

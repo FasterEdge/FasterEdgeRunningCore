@@ -74,7 +74,7 @@ func (i InitSystem) String() string { return string(i) }
 type Info struct {
 	GOOS          string     `json:"goos"`
 	GOARCH        string     `json:"goarch"`
-	Arch          string     `json:"arch"` // 归一化架构：amd64 / arm64 / armv7 / 386 / riscv64
+	Arch          string     `json:"arch"` // 归一化架构标签：amd64 / arm64 / armv6 / armv7 / 386 / riscv64 …
 	Hostname      string     `json:"hostname"`
 	Distro        string     `json:"distro,omitempty"`
 	DistroVersion string     `json:"distro_version,omitempty"`
@@ -259,21 +259,15 @@ func firstExisting(lookPath func(string) (string, error), names ...string) strin
 }
 
 // NormalizeArch 把 Go 的 GOARCH 映射到本项目产物命名所用的架构标签。
+//
+// 它是「GOARCH → 产物命名架构标签」的唯一入口。除 arm 外，GOARCH 与产物标签
+// 完全同名，原样返回；arm 需要按 GOARM 再细分，因为 armv6 与 armv7 的产物
+// 互不通用，笼统给 armv7 会让 armv6 设备下载到跑不起来的二进制。
 func NormalizeArch(goarch string) string {
-	switch goarch {
-	case "arm":
-		return "armv7"
-	case "386":
-		return "386"
-	case "amd64":
-		return "amd64"
-	case "arm64":
-		return "arm64"
-	case "riscv64":
-		return "riscv64"
-	default:
-		return goarch
+	if goarch == "arm" {
+		return armArchLabel()
 	}
+	return goarch
 }
 
 // SupportsArch 报告给定组件支持的架构集合是否包含目标架构。

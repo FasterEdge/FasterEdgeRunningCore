@@ -180,12 +180,28 @@ func TestDetectRejectsIncompleteEnv(t *testing.T) {
 }
 
 func TestNormalizeArch(t *testing.T) {
-	cases := map[string]string{"arm": "armv7", "386": "386", "amd64": "amd64", "arm64": "arm64", "riscv64": "riscv64", "wasm": "wasm"}
+	// arm 的标签由 GOARM 决定，按构建配置在 arch_self_*_test.go 里分别断言。
+	// 这里只断言与 GOARM 无关、原样透传的那些 GOARCH。
+	cases := map[string]string{
+		"386": "386", "amd64": "amd64", "arm64": "arm64", "riscv64": "riscv64",
+		"loong64": "loong64", "mips": "mips", "mipsle": "mipsle",
+		"mips64": "mips64", "mips64le": "mips64le",
+		"ppc64": "ppc64", "ppc64le": "ppc64le", "s390x": "s390x",
+		"wasm": "wasm",
+	}
 	for in, want := range cases {
 		if got := NormalizeArch(in); got != want {
 			t.Errorf("NormalizeArch(%q) = %q，期望 %q", in, got, want)
 		}
 	}
+}
+
+// TestNormalizeArchSelf 断言本机自报的架构标签与「按它拼产物名」的规则一致。
+// 这里刻意不写死 armv7：arm 的具体标签由 arch_self_armv6_test.go /
+// arch_self_armv7_test.go / arch_self_fallback_test.go 按 GOARM 分别断言，
+// 写死会让 armv6 设备误判成 armv7，从而下错产物。
+func TestNormalizeArchSelf(t *testing.T) {
+	armSelfLabelTest(t)
 }
 
 func TestSupportsArch(t *testing.T) {

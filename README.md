@@ -90,6 +90,9 @@ curl -fsSL https://github.com/FasterEdge/FasterEdgeRunningCore/releases/latest/d
 | `ferc status` | 列出本机已装载组件、版本、托管方、路径 |
 | `ferc verify` | 检查已装组件的文件是否还在、是否可执行 |
 | `ferc remove <组件...>` | 卸载组件并撤销服务注册 |
+| `ferc restore` | 重启后按 `ferc-state.json` 重放托管关系（开机自启就是调它） |
+| `ferc boot enable\|disable\|status` | 落盘 / 撤销 / 查看开机自启（systemd、openrc、sysvinit、launchd、计划任务、autorun） |
+| `ferc mirror export\|serve` | 导出一份可整体搬迁的离线镜像目录 / 把它挂在 HTTP 上给内网节点取包 |
 | `ferc detect` | 打印平台探测结果与保活能力判定 |
 
 通用选项：
@@ -100,8 +103,11 @@ curl -fsSL https://github.com/FasterEdge/FasterEdgeRunningCore/releases/latest/d
 | `--dry-run` | 只打印计划，不下载不落盘 |
 | `--json` | 机器可读输出 |
 | `--no-start` | 只落盘，不注册服务（非 root 场景常用） |
+| `--no-boot` | 装载成功但不落盘开机自启 |
 | `--allow-conflicts` | 把端口/互斥冲突降级为告警 |
 | `--catalog <file>` | 用外部清单覆盖内置清单 |
+| `--from <dir\|url>` | 从镜像取包（本地目录或 HTTP 镜像），不访问外网 |
+| `--fallback-github` | 镜像里缺某个包时回落 GitHub |
 | `--token <token>` | GitHub token（默认取 `GH_TOKEN` / `GITHUB_TOKEN`） |
 
 退出码：`0` 成功，`1` 执行失败或检查不通过，`2` 参数错误。
@@ -150,6 +156,39 @@ curl -fsSL https://github.com/FasterEdge/FasterEdgeRunningCore/releases/latest/d
 - **校验优先**：release 若提供 `SHA256SUMS.txt` / `checksums-sha1.txt`，强制校验；校验文件下载失败直接判失败，不会因为“拿不到校验文件”而跳过校验。没有校验文件时日志会明确写“本次未校验”，不假装校验过。
 - **不给工具装保活**：`kind=tool` 的组件不会注册任何服务——一次性工具跑完就该退出，给它注册重启只会造成死循环。
 - **不给 supervisor 套 supervisor**：进程管理器自身标记为 `self`，避免保活链成环。
+- **镜像自校验**：`mirror export` 给每个产物当场算 SHA256 写进镜像索引。原仓库有的发 checksums、有的根本不发，镜像这一层让“从邻居那儿拷来的包”也能核对，且索引里不存绝对 URL——整个目录拷到 U 盘依然可用。
+
+### 七·五、不通外网的节点怎么取包
+
+镜像目录只记「仓库 + tag + 文件名」，不记绝对地址，客户端只换基址。因此离线场景就是把目录拷到 U 盘，局域网场景就是让一台能上网的节点把目录挂起来：
+
+```bash
+# 1. 在上网节点导出（只导本集群需要的架构可以 --arch amd64,arm64）
+ferc mirror export --dir /media/usb/ferc-mirror
+
+# 2a. U 盘：把目录直接拷到目标机
+# 2b. 局域网：在上网节点起 HTTP 服务
+ferc mirror serve --dir /media/usb/ferc-mirror          # 默认 0.0.0.0:8090
+
+# 3. 在目标节点装载，全程不需要外网、也不需要下游有任何凭据
+ferc install simple-web-shell --from /media/usb/ferc-mirror
+ferc install simple-web-shell --from http://10.0.0.9:8090
+
+# 二级转发：上游自己也没外网时，先吃 U 盘再吐给现场
+ferc mirror export --dir /srv/ferc-lan --from /media/usb/ferc-mirror
+```
+
+`--from` 与 GitHub 可以并存：加 `--fallback-github` 后，镜像里缺的包会回落到 GitHub，镜像里有的优先走镜像。
+
+镜像目录布局：
+
+```
+<base>/
+├── ferc-mirror.json                                    总目录：仓库 → 最新 tag
+└── repos/<owner>/<name>/releases/<tag>/
+    ├── release.json                                    产物清单（含各自 SHA256）
+    └── <stem>-<goos>-<goarch>.tar.gz|zip
+```
 
 ### 八、构建与测试
 
@@ -160,6 +199,8 @@ go build -o ferc ./cmd/ferc
 ```
 
 所有平台相关判断都通过 `platform.Env` 注入，各 init 系统的单元文件由纯函数渲染并断言，因此测试不需要 root、不需要真的去改 `/etc`，在 Windows/macOS/Linux 上都能跑。
+
+发布矩阵覆盖 19 个 target：`linux/{386,amd64,armv6,armv7,arm64,loong64,mips,mipsle,mips64,mips64le,ppc64,ppc64le,riscv64,s390x}`、`darwin/{amd64,arm64}`、`windows/{386,amd64,arm64}`。其中 `armv6` 与 `armv7` 靠 `GOARM` 与 `//go:build arm.6` / `arm.7` 区分：`GOARM=6` 只置 `arm.6`，`GOARM=7` 同时置 `arm.6` 和 `arm.7`，因此 `arch_armv6.go` 用 `arm.6 && !arm.7`、`arch_armv7.go` 用 `arm.7`。
 
 ### 九、Docker
 

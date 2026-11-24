@@ -175,3 +175,39 @@ func TestTarget(t *testing.T) {
 		t.Fatalf("Target = %q", got)
 	}
 }
+
+// TestArchsMatchPublishedReleases 把清单里的 archs 钉在“各仓真的发布了什么”上。
+// 运行核拿 archs 决定要不要去下载：写多了会让用户以为能装、结果拿到 404，
+// 写少了会让能装的环境被跳过，所以两者都必须来自各仓已发布产物的实况。
+func TestArchsMatchPublishedReleases(t *testing.T) {
+	c, err := Builtin()
+	if err != nil {
+		t.Fatalf("加载失败: %v", err)
+	}
+	// 已核实的发布情况：除 dontcrack 外的组件只发 amd64/arm64。
+	want := map[string][]string{
+		"dontcrack": {"386", "amd64", "arm64", "armv7"},
+	}
+	allowed := map[string]bool{"386": true, "amd64": true, "arm64": true, "armv7": true}
+	for i := range c.Components {
+		comp := &c.Components[i]
+		archs, ok := want[comp.Name]
+		if !ok {
+			archs = []string{"amd64", "arm64"}
+		}
+		if len(comp.Archs) != len(archs) {
+			t.Errorf("%s 的 archs = %v，期望 %v（须与已发布产物一致）", comp.Name, comp.Archs, archs)
+			continue
+		}
+		for j, a := range archs {
+			if comp.Archs[j] != a {
+				t.Errorf("%s 的 archs[%d] = %q，期望 %q", comp.Name, j, comp.Archs[j], a)
+			}
+		}
+		for _, a := range comp.Archs {
+			if !allowed[a] {
+				t.Errorf("%s 声明了未发布的架构 %q，会让用户以为能装却拿到 404", comp.Name, a)
+			}
+		}
+	}
+}

@@ -28,16 +28,25 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { target: linux-amd64,   goos: linux,   goarch: amd64,   ext: ''   }
-          - { target: linux-arm64,   goos: linux,   goarch: arm64,   ext: ''   }
-          - { target: linux-armv7,   goos: linux,   goarch: arm,     ext: ''   }
-          - { target: linux-386,     goos: linux,   goarch: 386,     ext: ''   }
-          - { target: linux-riscv64, goos: linux,   goarch: riscv64, ext: ''   }
-          - { target: darwin-amd64,  goos: darwin,  goarch: amd64,   ext: ''   }
-          - { target: darwin-arm64,  goos: darwin,  goarch: arm64,   ext: ''   }
-          - { target: windows-amd64, goos: windows, goarch: amd64,   ext: .exe }
-          - { target: windows-arm64, goos: windows, goarch: arm64,   ext: .exe }
-          - { target: windows-386,   goos: windows, goarch: 386,     ext: .exe }
+          - { target: linux-386,      goos: linux,   goarch: 386,      goarm: '', ext: ''   }
+          - { target: linux-amd64,    goos: linux,   goarch: amd64,    goarm: '', ext: ''   }
+          - { target: linux-armv6,    goos: linux,   goarch: arm,      goarm: '6', ext: ''   }
+          - { target: linux-armv7,    goos: linux,   goarch: arm,      goarm: '7', ext: ''   }
+          - { target: linux-arm64,    goos: linux,   goarch: arm64,    goarm: '', ext: ''   }
+          - { target: linux-loong64,  goos: linux,   goarch: loong64,  goarm: '', ext: ''   }
+          - { target: linux-mips,     goos: linux,   goarch: mips,     goarm: '', ext: ''   }
+          - { target: linux-mipsle,   goos: linux,   goarch: mipsle,   goarm: '', ext: ''   }
+          - { target: linux-mips64,   goos: linux,   goarch: mips64,   goarm: '', ext: ''   }
+          - { target: linux-mips64le, goos: linux,   goarch: mips64le, goarm: '', ext: ''   }
+          - { target: linux-ppc64,    goos: linux,   goarch: ppc64,    goarm: '', ext: ''   }
+          - { target: linux-ppc64le,  goos: linux,   goarch: ppc64le,  goarm: '', ext: ''   }
+          - { target: linux-riscv64,  goos: linux,   goarch: riscv64,  goarm: '', ext: ''   }
+          - { target: linux-s390x,    goos: linux,   goarch: s390x,    goarm: '', ext: ''   }
+          - { target: darwin-amd64,   goos: darwin,  goarch: amd64,    goarm: '', ext: ''   }
+          - { target: darwin-arm64,   goos: darwin,  goarch: arm64,    goarm: '', ext: ''   }
+          - { target: windows-386,    goos: windows, goarch: 386,      goarm: '', ext: .exe }
+          - { target: windows-amd64,  goos: windows, goarch: amd64,    goarm: '', ext: .exe }
+          - { target: windows-arm64,  goos: windows, goarch: arm64,    goarm: '', ext: .exe }
     steps:
     - uses: actions/checkout@v7
     - uses: actions/setup-go@v7
@@ -47,6 +56,7 @@ jobs:
       env:
         GOOS: ${{ matrix.goos }}
         GOARCH: ${{ matrix.goarch }}
+        GOARM: ${{ matrix.goarm }}
       run: |
         set -euo pipefail
         version="${GITHUB_REF_NAME}"
@@ -56,6 +66,8 @@ jobs:
         esac
         mkdir -p dist
         # 版本号写进二进制，让 `ferc version` 能自证身份——排障时第一个要看的就是它。
+        # armv6 与 armv7 是两条独立产物：GOARM 不传时 Go 默认给 7，混用会让
+        # armv6 设备装上跑不起来的二进制。
         CGO_ENABLED=0 go build -trimpath \
           -ldflags="-s -w -X github.com/FasterEdge/FasterEdgeRunningCore/internal/cli.Version=$version" \
           -o "dist/ferc${{ matrix.ext }}" ./cmd/ferc

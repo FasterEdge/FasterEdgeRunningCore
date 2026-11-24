@@ -24,9 +24,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/FasterEdge/FasterEdgeRunningCore/internal/boot"
 	"github.com/FasterEdge/FasterEdgeRunningCore/internal/catalog"
 	"github.com/FasterEdge/FasterEdgeRunningCore/internal/fetch"
 	"github.com/FasterEdge/FasterEdgeRunningCore/internal/install"
+	"github.com/FasterEdge/FasterEdgeRunningCore/internal/mirror"
 	"github.com/FasterEdge/FasterEdgeRunningCore/internal/platform"
 	"github.com/FasterEdge/FasterEdgeRunningCore/internal/resolve"
 	"github.com/FasterEdge/FasterEdgeRunningCore/internal/state"
@@ -46,10 +48,16 @@ type Env struct {
 	Token string
 	// Platform 探测函数。
 	Detect func(ctx context.Context) (platform.Info, error)
-	// Fetcher 允许测试注入假的 GitHub。
-	Fetcher *fetch.Client
+	// Source 允许测试注入假的取回源；为 nil 时按 Token / --from 构造。
+	Source fetch.Source
 	// Supervisor 允许测试注入假的 init 操作。
 	Supervisor func(info platform.Info, root string) *supervise.Manager
+	// Boot 允许测试注入开机自启方案；为 nil 时按探测结果真实生成。
+	Boot func(info platform.Info, root string) boot.Plan
+	// Run 执行一条外部命令；为 nil 时真实执行并隐藏窗口。
+	Run func(ctx context.Context, name string, args ...string) (string, error)
+	// GOOS 覆盖方案生成所用的操作系统名（测试里在 Windows 上跑 linux 方案）。
+	GOOS string
 	// Getenv 读取环境变量。
 	Getenv func(string) string
 }
@@ -115,6 +123,12 @@ func Run(ctx context.Context, args []string, env Env) int {
 		return cmdVerify(ctx, rest, env)
 	case "remove":
 		return cmdRemove(ctx, rest, env)
+	case "restore":
+		return cmdRestore(ctx, rest, env)
+	case "boot":
+		return cmdBoot(ctx, rest, env)
+	case "mirror":
+		return cmdMirror(ctx, rest, env)
 	default:
 		fmt.Fprintf(env.stderr(), "未知子命令 %q\n\n", cmd)
 		printUsage(env.stderr())
@@ -132,6 +146,10 @@ func printUsage(w io.Writer) {
   ferc status                  查看本机已装载组件
   ferc verify                  检查已装载组件是否健康
   ferc remove   <组件...>      卸载组件
+  ferc restore                 重放已装载组件的托管关系（开机自启就是调它）
+  ferc boot     enable|disable|status
+                               落盘 / 撤销 / 查看开机自启
+  ferc mirror   export|serve     导出 / 分享离线镜像（给不通外网的节点取包）
   ferc detect                  打印平台探测结果
   ferc version                 打印版本
 
@@ -142,23 +160,37 @@ func printUsage(w io.Writer) {
   --json              机器可读输出
   --catalog <file>    用外部清单覆盖内置清单
   --no-start          只落盘，不注册服务/不托管
+  --no-boot           装载后不落盘开机自启
   --allow-conflicts   把端口/互斥冲突降级为告警
+  --from <dir|url>    从镜像取包（本地目录或 http 镜像），无需外网
+  --fallback-github   镜像缺包时回落 GitHub
 
 运行核不是常驻进程：它装完就退出，节点后续由系统 init 或已装载的
 进程管理器（DontCrack）托管。
+
+给不通外网的节点取包：
+  1. 在上网节点     ferc mirror export --dir /media/usb/ferc-mirror
+  2. 把目录拷到目标（U 盘），或在上网节点 ferc mirror serve --dir <同一目录>
+  3. 在目标节点     ferc install <组件> --from <目录|http://上游:8090>
 `)
 }
 
 // common 收集所有子命令共享的选项。
 type common struct {
-	root           string
-	token          string
-	dryRun         bool
-	json           bool
-	catalogPath    string
-	noStart        bool
+	root        string
+	token       string
+	dryRun      bool
+	json        bool
+	catalogPath string
+	noStart     bool
+	// noBoot 为真时装载完成也不落盘开机自启，交给运维者显式执行 ferc boot enable。
+	noBoot         bool
 	allowConflicts bool
-	timeout        time.Duration
+	// mirrorBase 非空表示从镜像目录 / HTTP 镜像取包，不访问外网 GitHub。
+	mirrorBase string
+	// mirrorChain 在 --mirror 之外再回落 GitHub（镜像缺包时兜底）。
+	mirrorChain bool
+	timeout     time.Duration
 }
 
 func bindCommon(fs *flag.FlagSet, c *common, env Env) {
@@ -172,7 +204,10 @@ func bindCommon(fs *flag.FlagSet, c *common, env Env) {
 	fs.BoolVar(&c.json, "json", false, "机器可读输出")
 	fs.StringVar(&c.catalogPath, "catalog", "", "外部清单文件")
 	fs.BoolVar(&c.noStart, "no-start", false, "只落盘，不注册服务")
+	fs.BoolVar(&c.noBoot, "no-boot", false, "装载后不落盘开机自启")
 	fs.BoolVar(&c.allowConflicts, "allow-conflicts", false, "把冲突降级为告警")
+	fs.StringVar(&c.mirrorBase, "from", "", "从镜像取包：本地目录或 http(s) 基址（无需外网）")
+	fs.BoolVar(&c.mirrorChain, "fallback-github", false, "镜像缺包时回落 GitHub")
 	fs.DurationVar(&c.timeout, "timeout", 30*time.Minute, "整体超时")
 }
 
@@ -206,11 +241,19 @@ func (env Env) detect(ctx context.Context) (platform.Info, error) {
 	return platform.Default().Detect(ctx)
 }
 
-func (env Env) fetcher(c *common) *fetch.Client {
-	if env.Fetcher != nil {
-		return env.Fetcher
+func (env Env) source(c *common) fetch.Source {
+	if env.Source != nil {
+		return env.Source
 	}
-	return fetch.New(c.token)
+	gh := func() fetch.Source { return fetch.New(c.token) }
+	if c.mirrorBase == "" {
+		return gh()
+	}
+	store := mirror.New(c.mirrorBase)
+	if !c.mirrorChain {
+		return store
+	}
+	return mirror.NewChain([]string{"mirror", "github"}, []fetch.Source{store, gh()}, nil)
 }
 
 func (env Env) supervisor(info platform.Info, root string) *supervise.Manager {
@@ -219,6 +262,51 @@ func (env Env) supervisor(info platform.Info, root string) *supervise.Manager {
 	}
 	m := supervise.New(info, root)
 	return m
+}
+
+// goos 返回生成方案时使用的操作系统名：优先用探测结果，测试可覆盖。
+func (env Env) goos(info platform.Info) string {
+	if info.GOOS != "" {
+		return info.GOOS
+	}
+	if env.GOOS != "" {
+		return env.GOOS
+	}
+	return runtime.GOOS
+}
+
+// run 执行外部命令，未注入时走隐藏窗口的实现。
+func (env Env) run(ctx context.Context, name string, args ...string) (string, error) {
+	if env.Run != nil {
+		return env.Run(ctx, name, args...)
+	}
+	return runHidden(ctx, name, args...)
+}
+
+// fercPath 返回当前可执行文件的绝对路径，写进开机自启命令行。
+//
+// 开机脚本里的 PATH 通常只有 /bin:/sbin，靠 PATH 找 ferc 会找不到；因此这里
+// 尽量给绝对路径，实在拿不到才退回 "ferc"（boot 会就此给出警告）。
+func (env Env) fercPath() string {
+	if p, err := os.Executable(); err == nil && p != "" {
+		return p
+	}
+	return ""
+}
+
+// bootPlan 生成开机自启方案。测试可整体替换，以便在任意平台上断言落盘内容。
+func (env Env) bootPlan(info platform.Info, root string) boot.Plan {
+	if env.Boot != nil {
+		return env.Boot(info, root)
+	}
+	return boot.Build(env.goos(info), info.Init, boot.Options{
+		Root:     root,
+		FercPath: env.fercPath(),
+		// FasterEdgeOS 的镜像里可能还没有 /etc/autorun 目录，但 PID 1 每次开机
+		// 都会扫它；探测不到目录时不因此放弃落盘，否则这类节点永远没有自启。
+		HasAutorunDir:        func(p string) bool { _, err := os.Stat(p); return err == nil },
+		AllowAutorunFallback: true,
+	})
 }
 
 // parseFlagsAnywhere 解析允许 flags 与位置参数任意混排的命令行。
@@ -463,7 +551,7 @@ func runInstall(ctx context.Context, name string, args []string, env Env, fromEs
 	inst, err := install.New(install.Options{
 		Root:       c.root,
 		Info:       info,
-		Fetcher:    env.fetcher(&c),
+		Source:     env.source(&c),
 		Supervisor: sup,
 		DryRun:     c.dryRun,
 		Log:        logger{w: env.stdout()},
@@ -479,6 +567,8 @@ func runInstall(ctx context.Context, name string, args []string, env Env, fromEs
 		return 1
 	}
 	if c.json {
+		// JSON 是给机器读的：自启的成败改由 stderr 汇报，不污染 stdout。
+		enableBootAfterInstall(ctx, &c, env, info, env.stderr())
 		return writeJSON(env.stdout(), recs)
 	}
 	fmt.Fprintf(env.stdout(), "\n完成：装载 %d 个组件，数据根目录 %s\n", len(recs), c.root)
@@ -486,6 +576,8 @@ func runInstall(ctx context.Context, name string, args []string, env Env, fromEs
 		fmt.Fprintln(env.stdout(), "（dry-run，未做任何改动）")
 		return 0
 	}
+	// 托管关系此刻已经写进状态文件，自启脚本才有东西可重放；顺序不能颠倒。
+	enableBootAfterInstall(ctx, &c, env, info, env.stdout())
 	printNextSteps(env.stdout(), info, recs, c.root)
 	return 0
 }

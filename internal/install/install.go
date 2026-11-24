@@ -44,8 +44,9 @@ type Options struct {
 	Root string
 	// Info 是目标平台探测结果，用于写入状态文件，让节点“自述身份”。
 	Info platform.Info
-	// Fetcher 负责访问 GitHub；可在测试中替换。
-	Fetcher *fetch.Client
+	// Source 负责取回产物清单与产物本体；可为 nil（此时按 Token 构造 GitHub 客户端）。
+	// 抽成接口是为了让镜像目录 / HTTP 镜像也能驱动同一份装载逻辑。
+	Source fetch.Source
 	// Supervisor 负责注册服务；为 nil 表示只落盘不托管（--no-start）。
 	Supervisor *supervise.Manager
 	// Token 是 GitHub token，仅在未提供 Fetcher 时用于构造默认客户端。
@@ -407,9 +408,9 @@ func assetNames(rel *fetch.Release) string {
 	return strings.Join(names, ", ")
 }
 
-func (i *Installer) fetcher() *fetch.Client {
-	if i.opt.Fetcher != nil {
-		return i.opt.Fetcher
+func (i *Installer) fetcher() fetch.Source {
+	if i.opt.Source != nil {
+		return i.opt.Source
 	}
 	return fetch.New(i.opt.Token)
 }

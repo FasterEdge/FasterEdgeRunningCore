@@ -90,6 +90,9 @@ curl -fsSL https://github.com/FasterEdge/FasterEdgeRunningCore/releases/latest/d
 | `ferc status` | List installed components with version, supervisor and path |
 | `ferc verify` | Check that installed files still exist and remain executable |
 | `ferc remove <component...>` | Uninstall components and unregister their services |
+| `ferc restore` | Replay supervision from `ferc-state.json` after a reboot (this is what the boot hook runs) |
+| `ferc boot enable\|disable\|status` | Write / remove / inspect the boot hook (systemd, openrc, sysvinit, launchd, Task Scheduler, autorun) |
+| `ferc mirror export\|serve` | Export a relocatable offline mirror directory / serve it over HTTP to off-internet nodes |
 | `ferc detect` | Print platform detection and the supervision verdict |
 
 Common options:
@@ -100,8 +103,11 @@ Common options:
 | `--dry-run` | Print the plan only; nothing is downloaded or written |
 | `--json` | Machine-readable output |
 | `--no-start` | Write files only, do not register services (common without root) |
+| `--no-boot` | Install successfully but skip writing the boot hook |
 | `--allow-conflicts` | Downgrade port/mutual-exclusion conflicts to warnings |
 | `--catalog <file>` | Override the built-in component catalog |
+| `--from <dir\|url>` | Fetch packages from a mirror (local directory or HTTP mirror) instead of the internet |
+| `--fallback-github` | Fall back to GitHub for packages missing from the mirror |
 | `--token <token>` | GitHub token (defaults to `GH_TOKEN` / `GITHUB_TOKEN`) |
 
 Exit codes: `0` success, `1` execution failure or failed verification, `2` invalid arguments.
@@ -146,6 +152,39 @@ Each entry declares its repository, artifact naming rule, unpacked executable na
 - **Verification first**: when a release ships `SHA256SUMS.txt` / `checksums-sha1.txt`, verification is mandatory; a failed checksum-file download is a hard failure, because "could not fetch the checksum" must never degrade into "skipped verification". When no checksum file exists, the log says so plainly instead of pretending.
 - **No supervision for tools**: `kind=tool` components never get a service registration — a one-shot tool that restarts forever is a bug, not a feature.
 - **No supervisor for the supervisor**: the process manager marks itself `self`, so the supervision chain cannot form a cycle.
+- **Mirrors self-checksum**: `mirror export` computes a SHA256 for every artifact on the spot and writes it into the mirror index. Upstream repositories publish checksums inconsistently — some do, some do not at all — so this layer lets a node verify a package it received from a neighbour. The index stores no absolute URL: copy the whole directory onto a USB stick and it still works.
+
+#### Nodes without internet access
+
+A mirror directory records only `repo + tag + filename`, never an absolute address, so the client just swaps the base. Offline means copying the directory to a USB stick; LAN means letting one internet-capable node serve that directory:
+
+```bash
+# 1. Export on a node that has internet
+ferc mirror export --dir /media/usb/ferc-mirror          # add --arch amd64,arm64 to narrow it
+
+# 2a. USB stick: copy the directory to the target
+# 2b. LAN: serve it from the online node
+ferc mirror serve --dir /media/usb/ferc-mirror          # 0.0.0.0:8090 by default
+
+# 3. Install on the target — no internet, no downstream credentials
+ferc install simple-web-shell --from /media/usb/ferc-mirror
+ferc install simple-web-shell --from http://10.0.0.9:8090
+
+# Two-hop: an upstream node with no internet itself, re-exporting from a USB stick
+ferc mirror export --dir /srv/ferc-lan --from /media/usb/ferc-mirror
+```
+
+`--from` coexists with GitHub: add `--fallback-github` and packages missing from the mirror fall back to GitHub, while packages present in the mirror are preferred.
+
+Mirror layout:
+
+```
+<base>/
+├── ferc-mirror.json                                    index: repo -> latest tag
+└── repos/<owner>/<name>/releases/<tag>/
+    ├── release.json                                    artifact list (each with SHA256)
+    └── <stem>-<goos>-<goarch>.tar.gz|zip
+```
 
 ### 8. Build and test
 
@@ -156,6 +195,8 @@ go build -o ferc ./cmd/ferc
 ```
 
 Every platform-dependent decision is injected through `platform.Env`, and each init system's unit file is rendered by a pure function and asserted. Tests therefore need neither root nor a real `/etc`, and run on Windows, macOS and Linux alike.
+
+The release matrix covers 19 targets: `linux/{386,amd64,armv6,armv7,arm64,loong64,mips,mipsle,mips64,mips64le,ppc64,ppc64le,riscv64,s390x}`, `darwin/{amd64,arm64}`, `windows/{386,amd64,arm64}`. `armv6` and `armv7` are distinguished by `GOARM` together with `//go:build arm.6` / `arm.7`: `GOARM=6` sets only `arm.6`, `GOARM=7` sets both `arm.6` and `arm.7`, hence `arch_armv6.go` uses `arm.6 && !arm.7` and `arch_armv7.go` uses `arm.7`.
 
 ### 9. Docker
 

@@ -49,13 +49,25 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { target: linux-amd64, goos: linux, goarch: amd64, ext: '' }
-          - { target: linux-arm64, goos: linux, goarch: arm64, ext: '' }
-          - { target: linux-armv7, goos: linux, goarch: arm, ext: '' }
-          - { target: darwin-amd64, goos: darwin, goarch: amd64, ext: '' }
-          - { target: darwin-arm64, goos: darwin, goarch: arm64, ext: '' }
-          - { target: windows-amd64, goos: windows, goarch: amd64, ext: .exe }
-          - { target: windows-arm64, goos: windows, goarch: arm64, ext: .exe }
+          - { target: linux-386,      goos: linux,   goarch: 386,      goarm: '', ext: ''   }
+          - { target: linux-amd64,    goos: linux,   goarch: amd64,    goarm: '', ext: ''   }
+          - { target: linux-armv6,    goos: linux,   goarch: arm,      goarm: '6', ext: ''   }
+          - { target: linux-armv7,    goos: linux,   goarch: arm,      goarm: '7', ext: ''   }
+          - { target: linux-arm64,    goos: linux,   goarch: arm64,    goarm: '', ext: ''   }
+          - { target: linux-loong64,  goos: linux,   goarch: loong64,  goarm: '', ext: ''   }
+          - { target: linux-mips,     goos: linux,   goarch: mips,     goarm: '', ext: ''   }
+          - { target: linux-mipsle,   goos: linux,   goarch: mipsle,   goarm: '', ext: ''   }
+          - { target: linux-mips64,   goos: linux,   goarch: mips64,   goarm: '', ext: ''   }
+          - { target: linux-mips64le, goos: linux,   goarch: mips64le, goarm: '', ext: ''   }
+          - { target: linux-ppc64,    goos: linux,   goarch: ppc64,    goarm: '', ext: ''   }
+          - { target: linux-ppc64le,  goos: linux,   goarch: ppc64le,  goarm: '', ext: ''   }
+          - { target: linux-riscv64,  goos: linux,   goarch: riscv64,  goarm: '', ext: ''   }
+          - { target: linux-s390x,    goos: linux,   goarch: s390x,    goarm: '', ext: ''   }
+          - { target: darwin-amd64,   goos: darwin,  goarch: amd64,    goarm: '', ext: ''   }
+          - { target: darwin-arm64,   goos: darwin,  goarch: arm64,    goarm: '', ext: ''   }
+          - { target: windows-386,    goos: windows, goarch: 386,      goarm: '', ext: .exe }
+          - { target: windows-amd64,  goos: windows, goarch: amd64,    goarm: '', ext: .exe }
+          - { target: windows-arm64,  goos: windows, goarch: arm64,    goarm: '', ext: .exe }
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -64,10 +76,13 @@ jobs:
       # 运行核的价值在于“任意平台都能跑”，因此每个受支持平台都必须能被编译，
       # 且编译后的二进制要真的能回答 --help —— 只编译不执行会漏掉 init 分支的
       # 构建错误。
+      # arm 的两条产物靠 GOARM 区分：不传时 Go 默认按 armv7 编，armv6 就被悄悄
+      # 漏掉了，所以这里显式透传 GOARM。
       - name: '编译 ${{ matrix.target }}'
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
         run: |
           CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "ferc${{ matrix.ext }}" ./cmd/ferc
       - name: '本机可执行时验证 --help'
