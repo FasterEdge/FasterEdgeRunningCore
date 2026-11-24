@@ -131,6 +131,8 @@ func Run(ctx context.Context, args []string, env Env) int {
 		return cmdMirror(ctx, rest, env)
 	case "snapshot":
 		return cmdSnapshot(ctx, rest, env)
+	case "bench":
+		return cmdBench(ctx, rest, env)
 	default:
 		fmt.Fprintf(env.stderr(), "未知子命令 %q\n\n", cmd)
 		printUsage(env.stderr())
@@ -153,6 +155,7 @@ func printUsage(w io.Writer) {
                                落盘 / 撤销 / 查看开机自启
   ferc mirror   export|serve     导出 / 分享离线镜像（给不通外网的节点取包）
   ferc snapshot create|list|restore|delete
+  ferc bench    matrix|faults     跑装载实验矩阵并输出 CSV
                                打快照 / 列快照 / 回归到快照 / 删快照
   ferc detect                  打印平台探测结果
   ferc version                 打印版本
