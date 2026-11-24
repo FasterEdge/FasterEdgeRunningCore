@@ -166,6 +166,7 @@ func printUsage(w io.Writer) {
   --no-start          只落盘，不注册服务/不托管
   --no-boot           装载后不落盘开机自启
   --allow-conflicts   把端口/互斥冲突降级为告警
+  --no-artifact-check 关闭产物预检（不验架构与内核兼容性，日志会写明）
   --from <dir|url>    从镜像取包（本地目录或 http 镜像），无需外网
   --fallback-github   镜像缺包时回落 GitHub
 
@@ -199,7 +200,10 @@ type common struct {
 	mirrorBase string
 	// mirrorChain 在 --mirror 之外再回落 GitHub（镜像缺包时兜底）。
 	mirrorChain bool
-	timeout     time.Duration
+	// noArtifactCheck 关掉"解包后、落盘前"的产物预检。默认开启：
+	// 预检是安全行为，关闭必须显式。
+	noArtifactCheck bool
+	timeout         time.Duration
 }
 
 func bindCommon(fs *flag.FlagSet, c *common, env Env) {
@@ -215,6 +219,7 @@ func bindCommon(fs *flag.FlagSet, c *common, env Env) {
 	fs.BoolVar(&c.noStart, "no-start", false, "只落盘，不注册服务")
 	fs.BoolVar(&c.noBoot, "no-boot", false, "装载后不落盘开机自启")
 	fs.BoolVar(&c.allowConflicts, "allow-conflicts", false, "把冲突降级为告警")
+	fs.BoolVar(&c.noArtifactCheck, "no-artifact-check", false, "关闭产物预检（不验架构与内核兼容性）")
 	fs.StringVar(&c.mirrorBase, "from", "", "从镜像取包：本地目录或 http(s) 基址（无需外网）")
 	fs.BoolVar(&c.mirrorChain, "fallback-github", false, "镜像缺包时回落 GitHub")
 	fs.DurationVar(&c.timeout, "timeout", 30*time.Minute, "整体超时")
@@ -564,6 +569,10 @@ func runInstall(ctx context.Context, name string, args []string, env Env, fromEs
 		Supervisor: sup,
 		DryRun:     c.dryRun,
 		Log:        logger{w: env.stdout()},
+		ArtifactCheck: install.ArtifactCheckOptions{
+			// 不传 --no-artifact-check 就预检：安全行为不该靠"记得打开"。
+			Enabled: !c.noArtifactCheck,
+		},
 	})
 	if err != nil {
 		fmt.Fprintf(env.stderr(), "%v\n", err)

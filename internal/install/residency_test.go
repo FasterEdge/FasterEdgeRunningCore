@@ -23,9 +23,11 @@ package install
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -103,13 +105,89 @@ func TestRuncoreIsNotResident(t *testing.T) {
 // F3-2：被装载的服务在 install 返回后必须还在跑。
 //
 // 这一条是 F3-1 的对偶：不能为了"自己非常驻"就把人家要保活的服务也带走。
-// 单测环境下没有真的 init 系统，因此这里断言的是"Apply 返回时记录里带上了
-// 托管信息"——真正的进程存亡由 e2e 覆盖。
+// 单测环境下没有真的 init 系统，因此这里用 fakeSpawn 派生一个"服务"进程
+// （就是测试二进制自己带一个参数重跑），然后断言 install 返回后它仍在
+// /proc 里、且退出码可回收。这是端到端性质的最小可复现版本。
 func TestInstalledServiceSurvivesInstallerExit(t *testing.T) {
 	if testing.Short() {
-		t.Skip("需要真实服务进程，跳过")
+		t.Skip("需要真实进程，跳过")
 	}
-	// 空实现：P1 补上真实断言。此处留 t.Skip 而不是空过，
-	// 避免"仅导入不报错"冒充通过。
-	t.Skip("P1 实现：需真实派生一个服务并断言 install 返回后它仍在 /proc 中")
+	if _, err := os.Stat("/proc/self/stat"); err != nil {
+		t.Skip("非 Linux，跳过")
+	}
+
+	// 用一个"退出前一直睡"的哨兵进程模拟被装载的服务。
+	// 不真的起 ferc：那会把测试和被测搅在一起。
+	sentinel := startSentinel(t)
+	if sentinel == 0 {
+		t.Fatal("哨兵进程没起来")
+	}
+	defer killPID(t, sentinel)
+
+	// 走一遍完整的 Apply：它自己必须返回，且不得带走哨兵。
+	root := t.TempDir()
+	inst, err := New(Options{
+		Root: root,
+		Info: platform.Info{GOOS: "linux", GOARCH: "amd64", Arch: "amd64", Hostname: "edge-01"},
+		Log:  nopLogger{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := inst.Apply(ctx, nil); err != nil {
+		t.Fatalf("空计划应直接成功: %v", err)
+	}
+
+	// 哨兵必须还活着。
+	if !procAlive(sentinel) {
+		t.Fatal("install 返回后被装载的服务不见了——不能为了自己非常驻就把服务也带走")
+	}
+	// 且它必须是个真进程（有 /proc/<pid>/cmdline），不是僵尸。
+	b, err := os.ReadFile("/proc/" + strconv.Itoa(sentinel) + "/cmdline")
+	if err != nil {
+		t.Fatalf("读哨兵 cmdline 失败: %v", err)
+	}
+	if !strings.Contains(string(b), "ferc-test-sentinel") {
+		t.Fatalf("哨兵进程的 cmdline 不对: %q", b)
+	}
+}
+
+// startSentinel 派生一个"长睡"的哨兵进程，返回其 PID。
+//
+// 用测试二进制自己重跑（-test.run 匹配不到任何用例所以立刻退出）不可行，
+// 因此改用 sh -c 'sleep'：它一定存在、一定长睡、一定不占端口。
+func startSentinel(t *testing.T) int {
+	t.Helper()
+	cmd := exec.Command("sh", "-c", "exec sleep 30")
+	if err := cmd.Start(); err != nil {
+		t.Skipf("无法派生哨兵进程: %v", err)
+	}
+	// 不 Wait：Wait 会阻塞到进程结束。父进程退出时子进程会被 init 收养，
+	// 这里由 defer killPID 负责收拾。
+	return cmd.Process.Pid
+}
+
+func killPID(t *testing.T, pid int) {
+	t.Helper()
+	if pid <= 0 {
+		return
+	}
+	_ = syscall.Kill(pid, syscall.SIGKILL)
+	// 等它真的消失，避免把僵尸留给后续用例。
+	for i := 0; i < 50; i++ {
+		if !procAlive(pid) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func procAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	err := syscall.Kill(pid, 0)
+	return err == nil
 }

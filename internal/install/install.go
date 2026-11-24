@@ -49,6 +49,9 @@ type Options struct {
 	Source fetch.Source
 	// Supervisor 负责注册服务；为 nil 表示只落盘不托管（--no-start）。
 	Supervisor *supervise.Manager
+	// ArtifactCheck 控制"解包后、落盘前"的产物预检。零值 Enabled=false 表示
+	// 不预检——因此 CLI 必须显式开启，忘了传就等于关，不会意外改变既有行为。
+	ArtifactCheck ArtifactCheckOptions
 	// Token 是 GitHub token，仅在未提供 Fetcher 时用于构造默认客户端。
 	Token string
 	// DryRun 时不下载不落盘，仅打印将要做什么。
@@ -211,7 +214,7 @@ func (i *Installer) applyStep(ctx context.Context, step resolve.Step, portOffset
 	binDir := i.BinDir()
 	finalPath := filepath.Join(binDir, step.Binary)
 
-	ver, err := i.installBinary(ctx, step, finalPath)
+	ver, err := i.installBinaryChecked(ctx, step, finalPath)
 	if err != nil {
 		return state.Record{}, supervise.Result{}, fmt.Errorf("install: 装载 %s 失败: %w", comp.Name, err)
 	}
