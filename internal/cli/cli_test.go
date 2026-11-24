@@ -938,7 +938,9 @@ func TestBootPlanUsesAutorunWhenNoInit(t *testing.T) {
 }
 
 func TestBootEnableWritesPlanFiles(t *testing.T) {
-	root := t.TempDir()
+	// 数据根目录含空格：shell 若不引用就会被拆成两个参数，这是现实里
+	// Windows/带空格挂载点最常见的坑。
+	root := filepath.Join(t.TempDir(), "Program Data", "ferc root")
 	autorunDir := filepath.Join(t.TempDir(), "autorun")
 
 	env, out, errb := testEnv(t, linuxInfo(platform.InitNone))
