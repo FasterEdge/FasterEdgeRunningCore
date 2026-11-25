@@ -42,6 +42,23 @@ jobs:
       - name: 'go test -race'
         run: go test -race -count=1 ./...
 
+  linux-runtime:
+    name: 'Linux 运行时实测'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.27.4'
+      # 这些测试带 //go:build linux，在 Windows/macOS 开发机上根本不编译，
+      # 因此"非常驻""/proc 观测""内核日志"这三条立论只有在这里才真跑。
+      # 单独拉一个 job 是为了让它在 CI 界面上可见——混在 go test ./... 里
+      # 看不出哪几条是被跳过的、哪几条是真的过了。
+      - name: 'F3 非常驻（/proc 枚举 + 哨兵进程）'
+        run: go test -count=1 -v -run 'TestRuncoreIsNotResident|TestInstalledServiceSurvives' ./internal/install/
+      - name: '真实观测（/proc 进程与 CPU、内核日志）'
+        run: go test -count=1 -v ./internal/probe/
+
   cross-build:
     name: '跨平台编译 ${{ matrix.target }}'
     runs-on: ubuntu-latest
