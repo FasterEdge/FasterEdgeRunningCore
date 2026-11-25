@@ -227,11 +227,11 @@ go build -o ferc ./cmd/ferc
 
 发布矩阵覆盖 19 个 target：`linux/{386,amd64,armv6,armv7,arm64,loong64,mips,mipsle,mips64,mips64le,ppc64,ppc64le,riscv64,s390x}`、`darwin/{amd64,arm64}`、`windows/{386,amd64,arm64}`。其中 `armv6` 与 `armv7` 靠 `GOARM` 与 `//go:build arm.6` / `arm.7` 区分：`GOARM=6` 只置 `arm.6`，`GOARM=7` 同时置 `arm.6` 和 `arm.7`，因此 `arch_armv6.go` 用 `arm.6 && !arm.7`、`arch_armv7.go` 用 `arm.7`。
 
-推送 `v*` 格式的 tag（例如 `v1.0.20261127`）即触发 `.github/workflows/release.yml`：19 路并行交叉编译 → 打包 → 生成 `checksums-md5.txt` 与 `checksums-sha1.txt` → 自动创建或更新 GitHub Release。版本号规则为 `1.0.YYYYMMDD`，记录在 `VERSION` 文件里。
+推送 `v*` 格式的 tag（例如 `v1.0.20261130`）即触发 `.github/workflows/release.yml`：19 路并行交叉编译 → 打包 → 生成 `checksums-md5.txt` 与 `checksums-sha1.txt` → 自动创建或更新 GitHub Release。版本号规则为 `1.0.YYYYMMDD`，记录在 `VERSION` 文件里。
 
 ```bash
-git tag v1.0.20261127
-git push origin v1.0.20261127
+git tag v1.0.20261130
+git push origin v1.0.20261130
 ```
 
 ### 九·五、装载实验矩阵（论文数据来源）

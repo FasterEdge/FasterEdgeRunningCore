@@ -264,11 +264,11 @@ Every platform-dependent decision is injected through `platform.Env`, and each i
 
 The release matrix covers 19 targets: `linux/{386,amd64,armv6,armv7,arm64,loong64,mips,mipsle,mips64,mips64le,ppc64,ppc64le,riscv64,s390x}`, `darwin/{amd64,arm64}`, `windows/{386,amd64,arm64}`. `armv6` and `armv7` are distinguished by `GOARM` together with `//go:build arm.6` / `arm.7`: `GOARM=6` sets only `arm.6`, `GOARM=7` sets both `arm.6` and `arm.7`, hence `arch_armv6.go` uses `arm.6 && !arm.7` and `arch_armv7.go` uses `arm.7`.
 
-Pushing a `v*` tag (for example `v1.0.20261127`) triggers `.github/workflows/release.yml`: 19 parallel cross-compiles → packaging → generating `checksums-md5.txt` and `checksums-sha1.txt` → creating or updating the GitHub Release automatically. The version scheme is `1.0.YYYYMMDD`, recorded in the `VERSION` file.
+Pushing a `v*` tag (for example `v1.0.20261130`) triggers `.github/workflows/release.yml`: 19 parallel cross-compiles → packaging → generating `checksums-md5.txt` and `checksums-sha1.txt` → creating or updating the GitHub Release automatically. The version scheme is `1.0.YYYYMMDD`, recorded in the `VERSION` file.
 
 ```bash
-git tag v1.0.20261127
-git push origin v1.0.20261127
+git tag v1.0.20261130
+git push origin v1.0.20261130
 ```
 
 ### 9.5 Loading experiment matrix (paper data source)
