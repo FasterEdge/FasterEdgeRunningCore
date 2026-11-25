@@ -2,6 +2,7 @@
   <img src="./Logo.png" alt="logo" width="100" />
   <h2>FasterEdgeRunningCore</h2>
   <h3>FERC — FasterEdge Running Core</h3>
+  <p>Graduation project: <b>An Edge Computing System Based on Agentic Operations and Visual Orchestration</b> · execution side</p>
   <p>Reduce single-device edge operations to one install command</p>
   <p>
     <a href="./README.md">中文</a> ·

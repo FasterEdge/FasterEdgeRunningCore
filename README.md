@@ -2,6 +2,7 @@
   <img src="./Logo.png" alt="logo" width="100" />
   <h2>FasterEdgeRunningCore</h2>
   <h3>FERC —— FasterEdge 运行核</h3>
+  <p>毕业设计课题：<b>基于智能体运维与可视化编排的边缘计算系统</b> · 执行侧</p>
   <p>把边缘单设备的运维成本归为一行安装指令</p>
   <p>
     <a href="./README.md">中文</a> ·
