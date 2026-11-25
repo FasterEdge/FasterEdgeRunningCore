@@ -75,6 +75,7 @@ ferc remove simple-web-shell
 | `ferc boot enable\|disable\|status` | 落盘 / 撤销 / 查看开机自启 |
 | `ferc mirror export\|serve` | 导出 / 分享离线镜像（给不通外网的节点取包） |
 | `ferc snapshot create\|list\|restore\|delete` | 打快照 / 列快照 / 回归到快照 / 删快照 |
+| `ferc bench matrix\|faults` | 跑装载实验矩阵，输出固定列 CSV（论文数据来源） |
 | `ferc detect` | 打印平台探测结果与保活能力判定 |
 | `ferc version` | 打印版本 |
 
@@ -229,6 +230,36 @@ go build -o ferc ./cmd/ferc
 git tag v1.0.20261127
 git push origin v1.0.20261127
 ```
+
+### 九·五、装载实验矩阵（论文数据来源）
+
+`ferc bench` 把「形态 × 网络」矩阵跑成固定列 CSV，是论文实验一的取数入口。
+
+```bash
+# 度量骨架（默认）：不打真装载，只验证矩阵可跑，elapsed_ms 全 0
+ferc bench matrix
+
+# 真实装载：走完整 install 流程，耗时与失败阶段为实测
+ferc bench matrix --real --component simple-web-shell
+
+# 故障注入：额外注入"介质不在场"，模拟现场最常见的那类失败
+ferc bench faults --real --out faults.csv
+```
+
+CSV 列固定，多次实验可直接 diff：
+
+```
+form,network,ok,stage,elapsed_ms,error_code
+binary,online,false,download,21058,apply-failed
+container,online,false,precheck,0,form-unsupported
+kernel-module,mirror,false,download,0,network-unavailable
+```
+
+阶段分布回答"败在哪儿"：`resolve`（取清单）、`download`（取字节）、`verify`（校验）、`extract`（解包）、`precheck`（产物预检）、`register`（注册托管）。网络类失败（connectex / i/o timeout / TLS handshake / 介质不在场）优先归到 `download`——现场最常见的一类失败就是取不到包，归错了会让阶段分布失真。
+
+检查顺序按"前提的强弱"排：**网络 > 形态兼容 > 组件与实验形态对得上**。网络在最前是因为它是物理前提——介质不在场时讨论"这个组件适配吗"没有意义。
+
+`--real` 才真装载：不加时零副作用。真装载要下载、注册服务、起进程，不该是默认行为。
 
 ### 十、Docker
 

@@ -75,6 +75,7 @@ Running without root works too: add `--no-start` to write files without register
 | `ferc boot enable\|disable\|status` | Write / remove / inspect the boot hook |
 | `ferc mirror export\|serve` | Export / share an offline mirror (for nodes without internet) |
 | `ferc snapshot create\|list\|restore\|delete` | Take / list / restore to / delete an environment snapshot |
+| `ferc bench matrix\|faults` | Run the loading experiment matrix, fixed-column CSV output (paper data source) |
 | `ferc detect` | Print platform detection and the supervision verdict |
 | `ferc version` | Print the version |
 
@@ -230,6 +231,36 @@ Pushing a `v*` tag (for example `v1.0.20261127`) triggers `.github/workflows/rel
 git tag v1.0.20261127
 git push origin v1.0.20261127
 ```
+
+### 9.5 Loading experiment matrix (paper data source)
+
+`ferc bench` runs the form × network matrix into a fixed-column CSV — the data entry point for experiment 1 of the paper.
+
+```bash
+# Measurement skeleton (default): no real loading, elapsed_ms all 0
+ferc bench matrix
+
+# Real loading: full install flow, timings and failure stages are measured
+ferc bench matrix --real --component simple-web-shell
+
+# Fault injection: additionally injects "medium not present"
+ferc bench faults --real --out faults.csv
+```
+
+Fixed CSV columns, so repeated experiments diff directly:
+
+```
+form,network,ok,stage,elapsed_ms,error_code
+binary,online,false,download,21058,apply-failed
+container,online,false,precheck,0,form-unsupported
+kernel-module,mirror,false,download,0,network-unavailable
+```
+
+The stage distribution answers "where did it fail": `resolve`, `download`, `verify`, `extract`, `precheck`, `register`. Network failures (connectex / i/o timeout / TLS handshake / medium not present) are classified as `download` first — the most common field failure is not getting the package at all, and misclassifying it distorts the stage distribution.
+
+Checks run in order of prerequisite strength: **network > form compatibility > component matches experiment form**. Network comes first because it is a physical prerequisite — when the medium is absent, "is this component compatible" is not the question to answer.
+
+`--real` is what really loads: without it there are zero side effects. Real loading downloads, registers services and starts processes; that must not be the default.
 
 ### 10. Docker
 
