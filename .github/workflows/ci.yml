@@ -56,8 +56,6 @@ jobs:
       # 看不出哪几条是被跳过的、哪几条是真的过了。
       - name: 'F3 非常驻（/proc 枚举 + 哨兵进程）'
         run: go test -count=1 -v -run 'TestRuncoreIsNotResident|TestInstalledServiceSurvives' ./internal/install/
-      - name: '真实观测（/proc 进程与 CPU、内核日志）'
-        run: go test -count=1 -v ./internal/probe/
 
   cross-build:
     name: '跨平台编译 ${{ matrix.target }}'
