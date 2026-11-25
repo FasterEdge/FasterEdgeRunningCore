@@ -92,8 +92,11 @@ Common options:
 | `--catalog <file>` | Override the built-in component catalog |
 | `--from <dir\|url>` | Fetch packages from a mirror (local directory or HTTP mirror) instead of the internet |
 | `--fallback-github` | Fall back to GitHub for packages missing from the mirror |
-| `--arch <a,b>` | Restrict `mirror export` to the given architectures; repeatable or comma-separated |
+| `--no-artifact-check` | Disable artifact pre-check (no architecture or kernel compatibility check; logged explicitly) |
+| `--timeout <d>` | Overall timeout (default 30m) |
 | `--token <token>` | GitHub token (defaults to `GH_TOKEN` / `GITHUB_TOKEN`) |
+
+`mirror export` additionally has `--arch <a,b>`: restrict the export to the given architectures; repeatable or comma-separated.
 
 Exit codes: `0` success, `1` execution failure or failed verification, `2` invalid arguments.
 
@@ -158,6 +161,42 @@ ferc snapshot list
 
 # Roll the whole node back: binaries restored and verified, state file replaced
 # wholesale, supervision rebuilt
+ferc snapshot restore <id>        # no id means the latest
+
+# Housekeeping
+ferc snapshot delete <id>         # or --all
+```
+
+A few deliberate choices:
+
+- **The state file is replaced wholesale, not merged.** Merging would turn "restore" into "patching" — components installed after the snapshot would survive, leaving the node neither past nor present. Wholesale replacement is what makes "back to that state" actually true.
+- **Binaries are stored alongside the state.** State alone is not enough: `ferc remove` deletes the binaries, so a snapshot must capture the executables under `bin/` too, or the restored state points at missing files.
+- **Cross-platform restores are refused outright.** A snapshot records the GOOS/Arch it was taken on and errors out on mismatch — restoring linux binaries onto windows only yields services that cannot start. The check uses the **detected target platform**, not `runtime.GOOS`, so the legitimate "manage a Linux node from a Windows workstation" flow is not blocked.
+- **Snapshots do not store component-generated config or credentials.** Those are runtime artifacts; storing them would make "going back" also revert data produced since.
+- **A verification failure leaves the state file as it was.** Binaries are restored and verified first; the state file is only touched once every binary checks out.
+
+Snapshot directories follow the same philosophy as mirror directories: relative locations only, no absolute addresses. The whole directory can be copied to a USB stick, exported with `mirror export`, or restored on another machine of the same architecture (the root is rewritten automatically, with a warning).
+
+```
+<root>/snapshots/<id>/
+├── snapshot.json                 metadata: time, note, source host, per-component version + SHA256
+├── ferc-state.json               the state file as it was (replaces the current one on restore)
+└── bin/<component>[.exe]         component executables
+```
+
+### 7.5 Undoing a mistake
+
+Install-time rollback only covers "an `install` failed halfway"; it stops working the moment the command exits. Most real incidents happen *after* a successful install: a wrong port, a deleted config, an incompatible new version. Snapshots exist for exactly that:
+
+```bash
+# Take a point before touching anything
+ferc snapshot create --note "known-good before cluster rollout"
+
+# See the points (source host, component count, size, binary completeness)
+ferc snapshot list
+
+# Roll the whole node back to that point: binaries restored and verified,
+# state file replaced wholesale, supervision rebuilt
 ferc snapshot restore <id>        # no id means the latest
 
 # Housekeeping

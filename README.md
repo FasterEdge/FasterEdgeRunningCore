@@ -92,8 +92,11 @@ ferc remove simple-web-shell
 | `--catalog <file>` | 用外部清单覆盖内置清单 |
 | `--from <dir\|url>` | 从镜像取包（本地目录或 HTTP 镜像），不访问外网 |
 | `--fallback-github` | 镜像里缺某个包时回落 GitHub |
-| `--arch <a,b>` | `mirror export` 时限定只导出指定架构，可重复或逗号分隔 |
+| `--no-artifact-check` | 关闭产物预检（不验架构与内核兼容性，日志会写明） |
+| `--timeout <d>` | 整体超时（默认 30m） |
 | `--token <token>` | GitHub token（默认取 `GH_TOKEN` / `GITHUB_TOKEN`） |
+
+`mirror export` 另有 `--arch <a,b>`：限定只导出指定架构的产物，可重复或逗号分隔。
 
 退出码：`0` 成功，`1` 执行失败或检查不通过，`2` 参数错误。
 
