@@ -118,6 +118,14 @@ func (i *Installer) LogDir() string { return filepath.Join(i.opt.Root, "logs") }
 //
 // 失败时会把本次已落盘的文件与已注册的服务全部回滚，状态文件保持原样。
 func (i *Installer) Apply(ctx context.Context, plan *resolve.Plan) ([]state.Record, error) {
+	// nil plan 当作"什么都没要装"处理，而不是 panic。
+	//
+	// 调用方拿不到计划（resolve 失败后的兜底路径、测试里的空场景）时传 nil 是
+	// 自然的写法；让它在第一行解引用就崩，等于把"没有计划"这个正常状态变成
+	// 一次崩溃。
+	if plan == nil {
+		return nil, nil
+	}
 	for _, w := range plan.Warnings {
 		i.log.Logf("警告: %s", w)
 	}
